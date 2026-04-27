@@ -1,9 +1,10 @@
 """El Arquitecto AI — Cultural Engine Backend.
 
-Soulfire Guardrails + Claude Sonnet 4.5 code boilerplate generator.
+Soulfire Guardrails + Claude Sonnet 4.5 code boilerplate generator with SSE streaming forge.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -13,7 +14,7 @@ import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import bcrypt
 import jwt
@@ -240,16 +241,26 @@ SYSTEM_PROMPT = (
 
 def _extract_json(text: str) -> dict:
     text = text.strip()
-    # Strip code fences if present
     fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
     if fence:
         text = fence.group(1)
-    # Find first { ... last }
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("No JSON object in LLM response")
     return json.loads(text[start : end + 1])
+
+
+def _normalize_files(raw_files) -> List[CodeFile]:
+    files: List[CodeFile] = []
+    for f in raw_files or []:
+        if not isinstance(f, dict):
+            continue
+        path = str(f.get("path", "")).strip().lstrip("/")
+        content = str(f.get("content", ""))
+        if path and content:
+            files.append(CodeFile(path=path, content=content))
+    return files
 
 
 TERMINAL_SCRIPT = [
@@ -263,46 +274,50 @@ TERMINAL_SCRIPT = [
 ]
 
 
+async def forge_logic_task(payload: GenerateIn) -> Tuple[dict, str]:
+    """Run the LLM forge in a worker thread so the FastAPI loop stays responsive.
+
+    `LlmChat.send_message` is `async def` but internally invokes a synchronous
+    `litellm.completion`. Awaiting it blocks the event loop for the whole
+    30-60s call. We isolate the call in a worker thread that owns its own
+    event loop via `asyncio.run`, freeing the main loop to serve other requests.
+    """
+    refined = cultural_refinement(payload.prompt, payload.category)
+    session_id = f"forge-{uuid.uuid4()}"
+
+    def _run_blocking() -> str:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=SYSTEM_PROMPT,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        return asyncio.run(chat.send_message(UserMessage(text=refined)))
+
+    raw = await asyncio.to_thread(_run_blocking)
+    data = _extract_json(raw)
+    return data, refined
+
+
 @api.post("/artifacts/generate", response_model=Artifact)
 async def generate_artifact(payload: GenerateIn, user: dict = Depends(current_user)):
-    refined = cultural_refinement(payload.prompt, payload.category)
-
+    """Non-streaming forge. Kept for programmatic use."""
     terminal_log: List[str] = [line.format(category=payload.category) for line in TERMINAL_SCRIPT]
-
-    session_id = f"forge-{uuid.uuid4()}"
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=SYSTEM_PROMPT,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-
     try:
-        raw = await chat.send_message(UserMessage(text=refined))
-        data = _extract_json(raw)
+        data, refined = await forge_logic_task(payload)
     except Exception as exc:
         logger.exception("LLM forge failed")
         raise HTTPException(status_code=502, detail=f"Forge failed: {exc}") from exc
 
-    title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
-    description = (data.get("description") or "").strip()
-    raw_files = data.get("files") or []
-    files: List[CodeFile] = []
-    for f in raw_files:
-        if not isinstance(f, dict):
-            continue
-        path = str(f.get("path", "")).strip().lstrip("/")
-        content = str(f.get("content", ""))
-        if path and content:
-            files.append(CodeFile(path=path, content=content))
-
+    files = _normalize_files(data.get("files"))
     if not files:
         raise HTTPException(status_code=502, detail="Forge produced no files")
 
+    title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
+    description = (data.get("description") or "").strip()
     terminal_log.append(f"[forge] {len(files)} files forged.")
     terminal_log.append("[ok] Ready for the boulevard. Hecho con ganas.")
 
     artifact_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
     artifact = Artifact(
         id=artifact_id,
         user_id=user["id"],
@@ -313,10 +328,81 @@ async def generate_artifact(payload: GenerateIn, user: dict = Depends(current_us
         refined_prompt=refined,
         files=files,
         terminal_log=terminal_log,
-        created_at=now,
+        created_at=datetime.now(timezone.utc).isoformat(),
     )
     await db.artifacts.insert_one(artifact.model_dump())
     return artifact
+
+
+def _sse(event: str, **fields) -> str:
+    return f"data: {json.dumps({'event': event, **fields})}\n\n"
+
+
+@api.post("/artifacts/generate-stream")
+async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(current_user)):
+    """Real-time forge via Server-Sent Events.
+
+    Emits `log` events as each agent stage completes, runs the LLM in a worker
+    thread (event loop stays responsive), then emits a final `done` event with
+    the persisted artifact id. Errors emit an `error` event.
+    """
+
+    async def event_gen():
+        terminal_log: List[str] = []
+
+        def push(msg: str) -> str:
+            terminal_log.append(msg)
+            return _sse("log", msg=msg)
+
+        try:
+            # Stage 1: prelude — staged so the user sees the agents come online.
+            for raw_line in TERMINAL_SCRIPT:
+                yield push(raw_line.format(category=payload.category))
+                await asyncio.sleep(0.45)
+
+            # Stage 2: actual forge (LLM in a worker thread).
+            data, refined = await forge_logic_task(payload)
+
+            files = _normalize_files(data.get("files"))
+            if not files:
+                yield _sse("error", msg="Forge produced no files")
+                return
+
+            title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
+            description = (data.get("description") or "").strip()
+
+            yield push(f"[forge] {len(files)} files forged.")
+            yield push("[ok] Ready for the boulevard. Hecho con ganas.")
+
+            artifact_id = str(uuid.uuid4())
+            artifact = Artifact(
+                id=artifact_id,
+                user_id=user["id"],
+                title=title,
+                description=description,
+                category=payload.category,
+                prompt=payload.prompt,
+                refined_prompt=refined,
+                files=files,
+                terminal_log=terminal_log,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            await db.artifacts.insert_one(artifact.model_dump())
+
+            yield _sse("done", id=artifact_id, file_count=len(files), title=title)
+        except Exception as exc:
+            logger.exception("Forge stream failed")
+            yield _sse("error", msg=str(exc))
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @api.get("/artifacts", response_model=List[ArtifactSummary])
@@ -354,7 +440,6 @@ async def download_artifact(
     request: Request,
     token: Optional[str] = Query(default=None),
 ):
-    # Accept token via Authorization header OR ?token= query (for direct browser downloads)
     user_id: Optional[str] = None
     if token:
         try:
@@ -384,11 +469,11 @@ async def download_artifact(
         }
         zf.writestr(f"{safe_title}/SOULFIRE.json", json.dumps(manifest, indent=2))
     buf.seek(0)
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="{safe_title}.zip"',
-    }
-    return StreamingResponse(buf, media_type="application/zip", headers=headers)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_title}.zip"'},
+    )
 
 
 @api.get("/categories")

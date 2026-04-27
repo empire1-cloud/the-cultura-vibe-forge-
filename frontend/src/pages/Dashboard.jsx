@@ -1,19 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, CATEGORIES } from "../lib/api";
+import { API, CATEGORIES } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Hammer, Flame, Cpu } from "lucide-react";
 import { toast } from "sonner";
-
-const STEPS = [
-  "> arquitecto init --soulfire",
-  "[planning-agent] Architecting the Soulfire blueprint...",
-  "[planning-agent] Setting the foundation...",
-  "[cultural-filter] Injecting Soulfire Guardrails",
-  "[frontend-agent] Connecting the wires...",
-  "[backend-agent] Spinning up the Python server...",
-  "[forge] Forging the Logic — calling Claude Sonnet 4.5...",
-];
 
 export default function Dashboard() {
   const [prompt, setPrompt] = useState("");
@@ -21,14 +11,17 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState([]);
   const logRef = useRef(null);
+  const abortRef = useRef(null);
   const nav = useNavigate();
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs]);
 
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const pushLog = (line) =>
-    setLogs((prev) => [...prev, { id: prev.length, text: line, t: new Date() }]);
+    setLogs((prev) => [...prev, { id: prev.length, text: line }]);
 
   const runStream = async () => {
     if (prompt.trim().length < 8) {
@@ -38,38 +31,78 @@ export default function Dashboard() {
     setLoading(true);
     setLogs([]);
 
-    // Simulated terminal feed
-    let i = 0;
-    const timers = [];
-    const tick = () => {
-      if (i < STEPS.length) {
-        const line =
-          i === 3 ? `${STEPS[i]} category=${category}` : STEPS[i];
-        pushLog(line);
-        i += 1;
-        timers.push(setTimeout(tick, 550 + Math.random() * 350));
-      }
-    };
-    tick();
+    const token = localStorage.getItem("arq_token");
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
 
     try {
-      const res = await api.post("/artifacts/generate", { prompt, category });
-      timers.forEach(clearTimeout);
-      // Backfill any remaining script lines
-      for (let j = i; j < STEPS.length; j += 1) {
-        const line = j === 3 ? `${STEPS[j]} category=${category}` : STEPS[j];
-        pushLog(line);
+      const res = await fetch(`${API}/artifacts/generate-stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({ prompt, category }),
+        signal: ctrl.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        const err = await res.text().catch(() => "");
+        throw new Error(err || `HTTP ${res.status}`);
       }
-      pushLog(`[forge] ${res.data.files.length} files forged.`);
-      pushLog("[ok] Ready for the boulevard. Hecho con ganas.");
-      toast.success("Artifact forged.");
-      setTimeout(() => nav(`/artifact/${res.data.id}`), 700);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      let artifactId = null;
+
+      // SSE frames are separated by a blank line (\n\n).
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          // Each frame may have multiple `data:` lines — concatenate per spec.
+          const dataLines = frame
+            .split("\n")
+            .filter((l) => l.startsWith("data:"))
+            .map((l) => l.slice(5).trim());
+          if (dataLines.length === 0) continue;
+          let payload;
+          try {
+            payload = JSON.parse(dataLines.join("\n"));
+          } catch {
+            continue;
+          }
+          if (payload.event === "log") {
+            pushLog(payload.msg);
+          } else if (payload.event === "done") {
+            artifactId = payload.id;
+            pushLog(`[done] artifact ${payload.id.slice(0, 8)}…`);
+          } else if (payload.event === "error") {
+            pushLog(`[error] ${payload.msg}`);
+            toast.error(payload.msg);
+          }
+        }
+      }
+
+      if (artifactId) {
+        toast.success("Artifact forged.");
+        setTimeout(() => nav(`/artifact/${artifactId}`), 600);
+      }
     } catch (err) {
-      timers.forEach(clearTimeout);
-      pushLog(`[error] ${err?.response?.data?.detail || "Forge failed"}`);
-      toast.error(err?.response?.data?.detail || "Forge failed");
+      if (err.name !== "AbortError") {
+        pushLog(`[error] ${err.message}`);
+        toast.error(err.message || "Forge failed");
+      }
     } finally {
       setLoading(false);
+      abortRef.current = null;
     }
   };
 
@@ -153,7 +186,7 @@ export default function Dashboard() {
         <div className="lg:col-span-5">
           <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-3 flex items-center gap-2">
             <Cpu className="h-3 w-3" />
-            El Terminal
+            El Terminal · Live
           </div>
           <div
             className="relative bg-[#050505] border border-white/10 rounded-md shadow-[inset_0_0_30px_rgba(0,0,0,1)] overflow-hidden"
@@ -164,7 +197,7 @@ export default function Dashboard() {
               <span className="h-2.5 w-2.5 rounded-full bg-slate-700" />
               <span className="h-2.5 w-2.5 rounded-full bg-slate-700" />
               <span className="ml-3 text-[10px] uppercase tracking-[0.3em] text-slate-500">
-                forge.console
+                forge.console · sse
               </span>
               <span
                 className={`ml-auto text-[10px] uppercase tracking-[0.3em] ${
@@ -189,7 +222,7 @@ export default function Dashboard() {
                   className={
                     l.text.startsWith("[error]")
                       ? "text-red-400"
-                      : l.text.startsWith("[ok]")
+                      : l.text.startsWith("[ok]") || l.text.startsWith("[done]")
                       ? "text-emerald-300"
                       : l.text.startsWith("[forge]")
                       ? "text-[#c8102e]"
