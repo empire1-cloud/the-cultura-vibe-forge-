@@ -1,0 +1,108 @@
+{
+  "project_name": "El Arquitecto AI",
+  "theme": "dark",
+  "archetype": "Archetype 5 (Jewel & Luxury) mixed with Technical Precision",
+  "vibe": "Cyber-Chicano",
+  "typography": {
+    "font_strategy": "The 'Editorial Future' paired with 'Terminal Utility'. Modern geometric sans-serif for headings (No Gothic), clean sans for body, and sharp mono for the terminal.",
+    "primary_font": "Space Grotesk",
+    "secondary_font": "Manrope",
+    "monospace_font": "JetBrains Mono",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-bold",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-semibold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-medium",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-base leading-relaxed",
+      "terminal": "text-sm font-mono tracking-tight",
+      "labels": "text-xs uppercase tracking-[0.2em] font-bold"
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#121212",
+      "terminal_bg": "#050505"
+    },
+    "primary": {
+      "candy_apple_red": "#C8102E",
+      "red_glow": "rgba(200, 16, 46, 0.4)",
+      "red_muted": "#8A0B20"
+    },
+    "accent": {
+      "chrome_light": "#F8FAFC",
+      "chrome_base": "#CBD5E1",
+      "chrome_dark": "#475569"
+    },
+    "text": {
+      "primary": "#F8FAFC",
+      "secondary": "#94A3B8",
+      "terminal_output": "#CBD5E1",
+      "terminal_active": "#C8102E"
+    },
+    "gradients": {
+      "chrome_metallic": "bg-gradient-to-br from-slate-200 via-slate-400 to-slate-600",
+      "chrome_border": "bg-gradient-to-b from-slate-400/50 to-transparent"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "Generous Spacing & High Density. Use padding like p-8, p-12. Avoid default Bootstrap grids. Use bento grids for 'The Taller'.",
+    "el_centro": "Centered, large focus area. Add generous padding inside the glowing text area.",
+    "el_terminal": "Compact bento grid cell or persistent side panel. Dense data view with tight gap-2 spacing internally.",
+    "the_taller": "Grid layout (grid-cols-1 md:grid-cols-2 lg:grid-cols-3) with gap-8. High contrast bento squares."
+  },
+  "components": {
+    "buttons": {
+      "primary": "Con Ganas button: text-white bg-[#C8102E] hover:bg-[#A30D25] shadow-[0_0_15px_rgba(200,16,46,0.5)] transition-all duration-300 rounded-none border border-[#C8102E]",
+      "secondary": "bg-transparent text-slate-200 border border-slate-600 hover:border-slate-300 hover:bg-slate-800 rounded-none transition-all"
+    },
+    "inputs": {
+      "el_centro_textarea": "bg-[#0A0A0A] text-white border border-slate-700 focus:border-slate-300 focus:ring-1 focus:ring-slate-300 placeholder:text-slate-600 rounded-md p-6 text-xl shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]",
+      "auth_inputs": "bg-[#121212] border-b border-slate-600 focus:border-[#C8102E] rounded-none px-0 py-3 text-white placeholder-slate-500"
+    },
+    "surfaces": {
+      "cards": "bg-[#121212] border border-slate-800 rounded-md shadow-lg",
+      "terminal_window": "bg-[#050505] border border-slate-800 rounded-md font-mono p-4 shadow-[inset_0_0_10px_rgba(0,0,0,1)]",
+      "glass": "backdrop-blur-xl bg-black/60 border-b border-white/10"
+    }
+  },
+  "animations": {
+    "hover_states": "Crisp and immediate. Metallic sheen transitions on borders.",
+    "terminal_typing": "Use staggered appearance or typewriter effect for 'Forging the Logic...' messages.",
+    "el_centro_focus": "Subtle pulse of the candy apple red shadow or chrome border when the text area is active."
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure text over Candy Apple Red meets 4.5:1 ratio. If needed, use white text and deepen the red slightly.",
+    "testing_attributes": [
+      "All interactive elements must have data-testid attributes.",
+      "Example: data-testid='el-centro-input'",
+      "Example: data-testid='con-ganas-button'",
+      "Example: data-testid='auth-login-button'",
+      "Example: data-testid='taller-gallery-item'"
+    ]
+  },
+  "image_urls": {
+    "auth_background": {
+      "url": "https://images.pexels.com/photos/4829063/pexels-photo-4829063.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Dark metallic industrial texture to serve as a deep, moody background for the Auth screens."
+    },
+    "hero_accent": {
+      "url": "https://images.pexels.com/photos/33604975/pexels-photo-33604975.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Classic red car chrome detailing. Use selectively as an overlay or background accent at 10-20% opacity to reinforce the custom-shop lowrider vibe."
+    },
+    "terminal_glow": {
+      "url": "https://images.unsplash.com/photo-1759842952767-456f1b6dded8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDJ8MHwxfHNlYXJjaHwxfHxyZWQlMjBnbG93aW5nJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc3Mjk2MzczfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Subtle dark red glow texture. Can be used behind 'El Terminal' or 'El Centro' as a soft, masked background glow."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the English language for UI text, styled in professional Chicano English (e.g., 'Con Ganas', 'The Taller', 'El Centro'). No generic Spanglish clichés.",
+    "Implement 'El Centro' as a massive, central prompt input area.",
+    "Implement 'El Terminal' as a live-updating console panel showing agent status.",
+    "Avoid using standard card components for everything; use sharp edges or very slight 4-8px radius for a technical/custom-shop feel.",
+    "Ensure the 'Candy Apple Red' (#C8102E) is used sparingly as an accent for actions and 'Chrome' gradients are used for borders and dividers.",
+    "Use Phosphor icons or Lucide icons but keep them sharp, technical, and minimal.",
+    "Do not use generic blue/purple AI gradients.",
+    "Must implement testing attributes (data-testid) on all buttons, links, inputs, and major sections."
+  ]
+}
