@@ -1,4 +1,4 @@
-"""El Arquitecto AI — Cultural Engine Backend.
+"""Cultura Vibe OS — Cultural Engine Backend.
 
 Soulfire Guardrails + Claude Sonnet 4.5 code boilerplate generator with SSE streaming forge.
 """
@@ -45,7 +45,7 @@ db = client[DB_NAME]
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("arquitecto")
 
-app = FastAPI(title="El Arquitecto AI")
+app = FastAPI(title="Cultura Vibe OS")
 api = APIRouter(prefix="/api")
 
 
@@ -75,9 +75,10 @@ CATEGORY_GUARDRAILS = {
 }
 
 BASE_PREAMBLE = (
-    "Act as a Chicano AI Architect — authoritative, craft-focused, minimalist. "
-    "Build this project with high fidelity, cultural authenticity, and creator-owned equity. "
-    "Ship production-grade code only. No placeholder TODOs. Follow the Soulfire Guardrails."
+    "Act as the Cultura Vibe Engine. You are an elite, craft-focused AI Architect. "
+    "Every line of code must reflect high-fidelity Chicano engineering standards: "
+    "Precision, Soul, and Creator Equity. Ship production-grade code only — no placeholder TODOs. "
+    "Follow the Soulfire Guardrails."
 )
 
 
@@ -183,7 +184,7 @@ async def current_user(request: Request) -> dict:
 # ---------- Routes: Auth ----------
 @api.get("/")
 async def root():
-    return {"service": "El Arquitecto AI", "status": "forjando"}
+    return {"service": "Cultura Vibe", "status": "active", "mode": "con_ganas"}
 
 
 @api.post("/auth/signup", response_model=AuthOut)
@@ -226,9 +227,9 @@ async def me(user: dict = Depends(current_user)):
 
 # ---------- Routes: Generate ----------
 SYSTEM_PROMPT = (
-    "You are El Arquitecto — a Chicano AI Architect. You forge production-grade code boilerplates "
-    "with cultural authenticity and creator-owned equity. You ALWAYS respond with STRICT JSON matching "
-    "this exact schema and nothing else — no prose, no markdown fences:\n"
+    "You are the Cultura Vibe Engine — an elite Chicano AI Architect. You forge production-grade "
+    "code boilerplates with cultural authenticity and creator-owned equity. You ALWAYS respond "
+    "with STRICT JSON matching this exact schema and nothing else — no prose, no markdown fences:\n"
     "{\n"
     '  "title": "short project title (<=60 chars)",\n'
     '  "description": "1-2 sentence description of what was forged",\n'
@@ -301,78 +302,142 @@ async def forge_logic_task(payload: GenerateIn) -> Tuple[dict, str]:
 @api.post("/artifacts/generate", response_model=Artifact)
 async def generate_artifact(payload: GenerateIn, user: dict = Depends(current_user)):
     """Non-streaming forge. Kept for programmatic use."""
-    terminal_log: List[str] = [line.format(category=payload.category) for line in TERMINAL_SCRIPT]
+    await _rate_acquire(user["id"])
     try:
-        data, refined = await forge_logic_task(payload)
-    except Exception as exc:
-        logger.exception("LLM forge failed")
-        raise HTTPException(status_code=502, detail=f"Forge failed: {exc}") from exc
+        terminal_log: List[str] = [line.format(category=payload.category) for line in TERMINAL_SCRIPT]
+        try:
+            data, refined = await forge_logic_task(payload)
+        except Exception as exc:
+            logger.exception("LLM forge failed")
+            raise HTTPException(status_code=502, detail=f"Forge failed: {exc}") from exc
 
-    files = _normalize_files(data.get("files"))
-    if not files:
-        raise HTTPException(status_code=502, detail="Forge produced no files")
+        files = _normalize_files(data.get("files"))
+        if not files:
+            raise HTTPException(status_code=502, detail="Forge produced no files")
 
-    title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
-    description = (data.get("description") or "").strip()
-    terminal_log.append(f"[forge] {len(files)} files forged.")
-    terminal_log.append("[ok] Ready for the boulevard. Hecho con ganas.")
+        title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
+        description = (data.get("description") or "").strip()
+        terminal_log.append(f"[forge] {len(files)} files forged.")
+        terminal_log.append("[ok] Ready for the boulevard. Hecho con ganas.")
 
-    artifact_id = str(uuid.uuid4())
-    artifact = Artifact(
-        id=artifact_id,
-        user_id=user["id"],
-        title=title,
-        description=description,
-        category=payload.category,
-        prompt=payload.prompt,
-        refined_prompt=refined,
-        files=files,
-        terminal_log=terminal_log,
-        created_at=datetime.now(timezone.utc).isoformat(),
-    )
-    await db.artifacts.insert_one(artifact.model_dump())
-    return artifact
+        artifact_id = str(uuid.uuid4())
+        artifact = Artifact(
+            id=artifact_id,
+            user_id=user["id"],
+            title=title,
+            description=description,
+            category=payload.category,
+            prompt=payload.prompt,
+            refined_prompt=refined,
+            files=files,
+            terminal_log=terminal_log,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await db.artifacts.insert_one(artifact.model_dump())
+        return artifact
+    finally:
+        await _rate_release(user["id"])
 
 
 def _sse(event: str, **fields) -> str:
     return f"data: {json.dumps({'event': event, **fields})}\n\n"
 
 
+# ---------- Rate limit (in-memory, per-user) ----------
+RATE_WINDOW_SECONDS = 3600
+RATE_MAX_PER_WINDOW = 20
+RATE_MAX_CONCURRENT = 2
+
+_rate_history: dict[str, list[float]] = {}
+_rate_active: dict[str, int] = {}
+_rate_lock = asyncio.Lock()
+
+
+async def _rate_acquire(user_id: str) -> None:
+    """Reserve a forge slot for the user or raise 429."""
+    now = datetime.now(timezone.utc).timestamp()
+    async with _rate_lock:
+        history = [t for t in _rate_history.get(user_id, []) if now - t < RATE_WINDOW_SECONDS]
+        if len(history) >= RATE_MAX_PER_WINDOW:
+            oldest = history[0]
+            retry_in = int(RATE_WINDOW_SECONDS - (now - oldest))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Forge limit reached ({RATE_MAX_PER_WINDOW}/hour). Retry in {retry_in}s.",
+                headers={"Retry-After": str(max(retry_in, 1))},
+            )
+        if _rate_active.get(user_id, 0) >= RATE_MAX_CONCURRENT:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many forges in flight (max {RATE_MAX_CONCURRENT}). Wait for one to finish.",
+            )
+        history.append(now)
+        _rate_history[user_id] = history
+        _rate_active[user_id] = _rate_active.get(user_id, 0) + 1
+
+
+async def _rate_release(user_id: str) -> None:
+    async with _rate_lock:
+        if _rate_active.get(user_id, 0) > 0:
+            _rate_active[user_id] -= 1
+
+
 @api.post("/artifacts/generate-stream")
 async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(current_user)):
     """Real-time forge via Server-Sent Events.
 
-    Emits `log` events as each agent stage completes, runs the LLM in a worker
-    thread (event loop stays responsive), then emits a final `done` event with
-    the persisted artifact id. Errors emit an `error` event.
+    - `log` events for each agent stage (live)
+    - `: ping` heartbeats every 15s during the long LLM call (proxy keep-alive)
+    - `file` events as each generated file is finalized
+    - final `done` event with artifact id, or `error`
     """
+    await _rate_acquire(user["id"])
 
-    async def event_gen():
+    queue: asyncio.Queue = asyncio.Queue()
+    SENTINEL = object()
+
+    async def heartbeat():
+        try:
+            while True:
+                await asyncio.sleep(15)
+                await queue.put(": ping\n\n")
+        except asyncio.CancelledError:
+            return
+
+    async def forge():
         terminal_log: List[str] = []
 
-        def push(msg: str) -> str:
+        async def push_log(msg: str):
             terminal_log.append(msg)
-            return _sse("log", msg=msg)
+            await queue.put(_sse("log", msg=msg))
 
         try:
-            # Stage 1: prelude — staged so the user sees the agents come online.
             for raw_line in TERMINAL_SCRIPT:
-                yield push(raw_line.format(category=payload.category))
+                await push_log(raw_line.format(category=payload.category))
                 await asyncio.sleep(0.45)
 
-            # Stage 2: actual forge (LLM in a worker thread).
             data, refined = await forge_logic_task(payload)
 
             files = _normalize_files(data.get("files"))
             if not files:
-                yield _sse("error", msg="Forge produced no files")
+                await queue.put(_sse("error", msg="Forge produced no files"))
                 return
 
             title = (payload.title or data.get("title") or "Untitled Artifact").strip()[:80]
             description = (data.get("description") or "").strip()
 
-            yield push(f"[forge] {len(files)} files forged.")
-            yield push("[ok] Ready for the boulevard. Hecho con ganas.")
+            # Per-file events — emit each file as it lands so the UI can show progress.
+            for f in files:
+                line_count = f.content.count("\n") + 1
+                await queue.put(
+                    _sse("file", path=f.path, lines=line_count, bytes=len(f.content))
+                )
+                terminal_log.append(f"[file] {f.path} ({line_count} lines)")
+                await queue.put(_sse("log", msg=f"[file] {f.path} ({line_count} lines)"))
+                await asyncio.sleep(0.05)
+
+            await push_log(f"[forge] {len(files)} files forged.")
+            await push_log("[ok] Ready for the boulevard. Hecho con ganas.")
 
             artifact_id = str(uuid.uuid4())
             artifact = Artifact(
@@ -389,10 +454,38 @@ async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(cur
             )
             await db.artifacts.insert_one(artifact.model_dump())
 
-            yield _sse("done", id=artifact_id, file_count=len(files), title=title)
+            await queue.put(
+                _sse("done", id=artifact_id, file_count=len(files), title=title)
+            )
         except Exception as exc:
             logger.exception("Forge stream failed")
-            yield _sse("error", msg=str(exc))
+            await queue.put(_sse("error", msg=str(exc)))
+
+    async def event_gen():
+        forge_task = asyncio.create_task(forge())
+        heartbeat_task = asyncio.create_task(heartbeat())
+
+        async def signal_done(_):
+            await queue.put(SENTINEL)
+
+        forge_task.add_done_callback(lambda t: asyncio.create_task(signal_done(t)))
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is SENTINEL:
+                    break
+                yield item
+            # Drain any remaining items pushed after sentinel was queued (rare).
+            while not queue.empty():
+                item = queue.get_nowait()
+                if item is not SENTINEL:
+                    yield item
+        finally:
+            heartbeat_task.cancel()
+            if not forge_task.done():
+                forge_task.cancel()
+            await _rate_release(user["id"])
 
     return StreamingResponse(
         event_gen(),

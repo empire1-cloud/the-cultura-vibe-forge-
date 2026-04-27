@@ -15,25 +15,25 @@ export default function Landing() {
         <div className="relative max-w-7xl mx-auto px-6 pt-24 pb-28 grid lg:grid-cols-12 gap-10 items-end">
           <div className="lg:col-span-8 rise">
             <div className="text-[11px] uppercase tracking-[0.35em] text-slate-500 mb-6">
-              Cyber-Chicano · Creator-Owned · Soulfire
+              Cultura Vibe · Cyber-Chicano · Creator-Owned
             </div>
-            <h1 className="font-display font-bold text-5xl sm:text-6xl lg:text-7xl leading-[0.95] tracking-tighter">
-              Forge apps with
+            <h1 className="font-display font-black text-5xl sm:text-6xl lg:text-[88px] leading-[0.9] tracking-tighter">
+              <span style={{ textShadow: "0 0 14px rgba(200,16,46,0.25), 2px 2px 0 rgba(170,170,170,0.25)" }}>
+                CULTURA <span className="candy-text">VIBE</span>
+              </span>
               <br />
-              <span className="chrome-gradient">chrome-grade</span>
-              <br />
-              <span className="candy-text">soul.</span>
+              <span className="chrome-gradient text-4xl sm:text-5xl lg:text-6xl">forge.</span>
             </h1>
             <p className="mt-8 max-w-xl text-slate-400 text-lg leading-relaxed">
-              El Arquitecto is a vibe coding forge. Type your vision, pick a category, hit
-              <span className="text-white font-medium"> Con Ganas</span>. The Cultural Engine
+              The Cultura Vibe OS is a vibe-coding forge. Type your vision, pick a category, hit
+              <span className="text-white font-medium"> Forge Con Ganas</span>. The Cultural Engine
               injects Soulfire Guardrails — 48kHz audio, Emotional Math, Creator Equity DNA —
               before shipping the boilerplate.
             </p>
             <div className="mt-10 flex items-center gap-3">
               <Link to="/signup" data-testid="hero-cta-start">
                 <Button size="lg" className="con-ganas-btn rounded-sm h-12 px-7">
-                  Start Forging
+                  Forge Con Ganas
                   <ArrowRight className="h-4 w-4 ml-2" />
                 </Button>
               </Link>
@@ -81,7 +81,7 @@ export default function Landing() {
             icon: Wrench,
             title: "The Cultural Engine",
             body:
-              "Every prompt is refined with a Chicano AI Architect preamble and category-specific Soulfire Guardrails before it ever reaches the model.",
+              "Every prompt is refined with the Cultura Vibe Engine preamble and category-specific Soulfire Guardrails before it ever reaches the model.",
           },
           {
             icon: Sparkles,

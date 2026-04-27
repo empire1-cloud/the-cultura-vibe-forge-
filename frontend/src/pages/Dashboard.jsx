@@ -10,6 +10,7 @@ export default function Dashboard() {
   const [category, setCategory] = useState("music");
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState([]);
+  const [files, setFiles] = useState([]);
   const logRef = useRef(null);
   const abortRef = useRef(null);
   const nav = useNavigate();
@@ -30,6 +31,7 @@ export default function Dashboard() {
     }
     setLoading(true);
     setLogs([]);
+    setFiles([]);
 
     const token = localStorage.getItem("arq_token");
     const ctrl = new AbortController();
@@ -81,9 +83,32 @@ export default function Dashboard() {
           }
           if (payload.event === "log") {
             pushLog(payload.msg);
+          } else if (payload.event === "file") {
+            setFiles((prev) => [...prev, payload]);
           } else if (payload.event === "done") {
             artifactId = payload.id;
             pushLog(`[done] artifact ${payload.id.slice(0, 8)}…`);
+            // Cultura Vibe completion mural
+            const arte = [
+              "",
+              "  .--------------------------------------------------.",
+              "  |  [OK] ARTIFACT FORGED CON GANAS                  |",
+              "  '--------------------------------------------------'",
+              "                                                      ",
+              "    ██████╗██╗   ██╗██╗  ████████╗██╗   ██╗██████╗  █████╗ ",
+              "   ██╔════╝██║   ██║██║  ╚══██╔══╝██║   ██║██╔══██╗██╔══██╗",
+              "   ██║     ██║   ██║██║     ██║   ██║   ██║██████╔╝███████║",
+              "   ██║     ██║   ██║██║     ██║   ██║   ██║██╔══██╗██╔══██║",
+              "   ╚██████╗╚██████╔╝███████╗██║   ╚██████╔╝██║  ██║██║  ██║",
+              "    ╚═════╝ ╚═════╝ ╚══════╝╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝",
+              "",
+              "    >> Certified Soulfire DNA — 48kHz Standard <<",
+              "",
+            ];
+            setLogs((prev) => [
+              ...prev,
+              ...arte.map((text, i) => ({ id: prev.length + i, text })),
+            ]);
           } else if (payload.event === "error") {
             pushLog(`[error] ${payload.msg}`);
             toast.error(payload.msg);
@@ -174,7 +199,7 @@ export default function Dashboard() {
               data-testid="con-ganas-button"
             >
               <Hammer className="h-4 w-4 mr-2" />
-              {loading ? "Forging the Logic..." : "Con Ganas"}
+              {loading ? "Forging the Logic..." : "Forge Con Ganas"}
             </Button>
             <div className="text-[11px] uppercase tracking-[0.25em] text-slate-600">
               {prompt.length}/4000
@@ -219,23 +244,50 @@ export default function Dashboard() {
               {logs.map((l, idx) => (
                 <div
                   key={l.id}
-                  className={
+                  className={`whitespace-pre ${
                     l.text.startsWith("[error]")
                       ? "text-red-400"
                       : l.text.startsWith("[ok]") || l.text.startsWith("[done]")
                       ? "text-emerald-300"
                       : l.text.startsWith("[forge]")
                       ? "text-[#c8102e]"
+                      : l.text.startsWith("  .") || l.text.startsWith("  '") || l.text.startsWith("  |")
+                      ? "text-[#c8102e]"
+                      : l.text.includes("█") || l.text.includes("╔") || l.text.includes("╚")
+                      ? "chrome-gradient"
+                      : l.text.includes(">> Certified")
+                      ? "text-[#c8102e]"
                       : "text-slate-300"
-                  }
+                  }`}
                   data-testid={`term-line-${idx}`}
                 >
-                  {l.text}
+                  {l.text || "\u00A0"}
                 </div>
               ))}
               {loading && <div className="text-[#c8102e] term-caret">&nbsp;</div>}
             </div>
           </div>
+
+          {files.length > 0 && (
+            <div className="mt-4">
+              <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-2 flex items-center justify-between">
+                <span>Files Forged</span>
+                <span className="text-slate-600">{files.length}</span>
+              </div>
+              <div className="bg-[#121212] border border-white/10 rounded-md divide-y divide-white/5 max-h-56 overflow-y-auto">
+                {files.map((f, i) => (
+                  <div
+                    key={`${f.path}-${i}`}
+                    className="px-3 py-2 flex items-center justify-between text-[12px] font-mono-term"
+                    data-testid={`forged-file-${i}`}
+                  >
+                    <span className="text-slate-200 truncate">{f.path}</span>
+                    <span className="text-slate-500 shrink-0 ml-3">{f.lines} ln</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

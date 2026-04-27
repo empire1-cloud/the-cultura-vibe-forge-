@@ -39,7 +39,7 @@ export default function Login() {
         <div className="absolute inset-0 bg-gradient-to-br from-black/70 via-black/50 to-[#c8102e]/20" />
         <div className="relative z-10 max-w-md">
           <div className="text-[10px] uppercase tracking-[0.35em] text-slate-400 mb-4">
-            El Arquitecto AI
+            Cultura Vibe
           </div>
           <h2 className="font-display font-bold text-4xl leading-tight tracking-tight">
             Return to <span className="candy-text">the forge.</span>

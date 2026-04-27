@@ -24,11 +24,14 @@ export default function Layout({ children }) {
               <Flame className="h-4 w-4 text-[#c8102e]" strokeWidth={2.5} />
             </div>
             <div className="leading-none">
-              <div className="font-display font-bold text-[15px] tracking-tight">
-                El Arquitecto <span className="candy-text">AI</span>
+              <div
+                className="font-display font-black text-[16px] tracking-tighter"
+                style={{ textShadow: "0 0 10px rgba(200,16,46,0.35), 1px 1px 0 rgba(170,170,170,0.25)" }}
+              >
+                CULTURA <span className="candy-text">VIBE</span>
               </div>
               <div className="text-[10px] uppercase tracking-[0.24em] text-slate-500">
-                Soulfire · Forge
+                Soulfire · Forge · OS
               </div>
             </div>
           </Link>
@@ -84,7 +87,7 @@ export default function Layout({ children }) {
       <main className="flex-1">{children}</main>
 
       <footer className="border-t border-white/10 py-6 text-center text-[11px] uppercase tracking-[0.24em] text-slate-600">
-        Hecho con ganas · Creator-owned · {new Date().getFullYear()}
+        Cultura Vibe · Hecho con ganas · Creator-owned · {new Date().getFullYear()}
       </footer>
     </div>
   );
