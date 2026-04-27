@@ -18,7 +18,7 @@ from typing import List, Optional
 import bcrypt
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRouter
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -349,7 +349,11 @@ async def get_artifact(artifact_id: str, user: dict = Depends(current_user)):
 
 
 @api.get("/artifacts/{artifact_id}/download")
-async def download_artifact(artifact_id: str, token: Optional[str] = None, request: Request = None):
+async def download_artifact(
+    artifact_id: str,
+    request: Request,
+    token: Optional[str] = Query(default=None),
+):
     # Accept token via Authorization header OR ?token= query (for direct browser downloads)
     user_id: Optional[str] = None
     if token:
