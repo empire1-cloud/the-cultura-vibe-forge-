@@ -3,22 +3,33 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 import { Button } from "./ui/button";
-import { LogOut, Hammer, Flame, Crown } from "lucide-react";
+import { LogOut, Hammer, Flame, Crown, Gauge } from "lucide-react";
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [tier, setTier] = useState(null);
+  const [usage, setUsage] = useState(null);
+
+  const refreshUsage = () => {
+    api
+      .get("/billing/usage")
+      .then((r) => setUsage(r.data))
+      .catch(() => setUsage(null));
+  };
 
   useEffect(() => {
     if (!user) {
-      setTier(null);
+      setUsage(null);
       return;
     }
-    api
-      .get("/billing/me")
-      .then((r) => setTier(r.data.tier))
-      .catch(() => setTier("aprendiz"));
+    refreshUsage();
+    const t = setInterval(refreshUsage, 30000);
+    const onForge = () => refreshUsage();
+    window.addEventListener("cv:forge-complete", onForge);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("cv:forge-complete", onForge);
+    };
   }, [user]);
 
   const linkCls = ({ isActive }) =>
@@ -58,28 +69,49 @@ export default function Layout({ children }) {
               The Taller
             </NavLink>
             {user && (
-              <NavLink to="/billing" className={linkCls} data-testid="nav-billing">
-                Billing
-              </NavLink>
+              <>
+                <NavLink to="/drafts" className={linkCls} data-testid="nav-drafts">
+                  Drafts
+                </NavLink>
+                <NavLink to="/billing" className={linkCls} data-testid="nav-billing">
+                  Billing
+                </NavLink>
+              </>
             )}
           </nav>
 
           <div className="flex items-center gap-3">
             {user ? (
               <>
+                {usage && (
+                  <Link
+                    to="/billing"
+                    className={`hidden sm:inline-flex items-center gap-2 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.22em] font-bold border transition-all font-mono-term ${
+                      usage.warn
+                        ? "border-[#c8102e]/60 bg-[#c8102e]/10 text-[#ff5b6f] candy-glow"
+                        : "border-white/10 text-slate-400 hover:border-white/30"
+                    }`}
+                    data-testid="usage-pill"
+                  >
+                    <Gauge className="h-3 w-3" />
+                    {usage.hour.used}/{usage.hour.limit} hr
+                    <span className="text-slate-600">·</span>
+                    {usage.day.used}/{usage.day.limit} day
+                  </Link>
+                )}
                 <Link
                   to="/billing"
-                  className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.22em] font-bold border transition-all ${
-                    tier === "maestro"
+                  className={`hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.22em] font-bold border transition-all ${
+                    usage?.tier === "maestro"
                       ? "border-[#c8102e]/50 bg-[#c8102e]/10 text-[#ff5b6f] candy-glow"
                       : "border-white/10 text-slate-400 hover:border-white/30"
                   }`}
                   data-testid="tier-badge"
                 >
                   <Crown className="h-3 w-3" />
-                  {tier === "maestro" ? "Maestro" : "Aprendiz"}
+                  {usage?.tier === "maestro" ? "Maestro" : "Aprendiz"}
                 </Link>
-                <span className="text-xs text-slate-400 hidden md:inline" data-testid="user-name">
+                <span className="text-xs text-slate-400 hidden lg:inline" data-testid="user-name">
                   {user.display_name}
                 </span>
                 <Button

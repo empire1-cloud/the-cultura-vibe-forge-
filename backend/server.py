@@ -457,6 +457,13 @@ async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(cur
     queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
 
+    # Compute usage post-acquire to surface a discreet [forge-meter] cue if at 80%+.
+    usage_counts = await _usage_counts(user["id"])
+    tier = _user_tier(user)
+    hour_limit = TIER_LIMITS[tier]["hour"]
+    hour_used = usage_counts["hour_used"]
+    show_meter = hour_used >= int(0.8 * hour_limit)
+
     async def heartbeat():
         try:
             while True:
@@ -476,6 +483,11 @@ async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(cur
             for raw_line in TERMINAL_SCRIPT:
                 await push_log(raw_line.format(category=payload.category))
                 await asyncio.sleep(0.45)
+
+            if show_meter:
+                await push_log(
+                    f"[forge-meter] {hour_used} / {hour_limit} used (Hustle accordingly.)"
+                )
 
             data, refined = await forge_logic_task(payload)
 
@@ -646,15 +658,61 @@ STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 
 # Backend-defined packages — frontend never sets the price.
 BILLING_PACKAGES = {
+    "maestro_monthly": {
+        "amount": 19.00,
+        "currency": "usd",
+        "label": "Maestro · Monthly",
+        "tagline": "Recurring · cancel anytime · 200 forges/hr",
+        "tier": "maestro",
+        "duration_days": 30,
+        "mode": "subscription",
+        "interval": "month",
+        "lookup_key": "cultura_maestro_monthly_v1",
+        "product_name": "Cultura Vibe — Maestro",
+    },
     "maestro_pass": {
         "amount": 19.00,
         "currency": "usd",
-        "label": "Maestro Pass",
-        "tagline": "30 days · 200 forges/hr · priority queue",
+        "label": "Maestro Pass · 30 days",
+        "tagline": "One-time · 30 days · 200 forges/hr",
         "tier": "maestro",
         "duration_days": 30,
+        "mode": "payment",
     },
 }
+
+
+_subscription_price_cache: dict[str, str] = {}
+
+
+def _ensure_recurring_price(pkg: dict) -> str:
+    """Lookup-or-create a recurring Stripe Price. Returns price_id.
+
+    Cached in memory after first lookup; idempotent via Stripe's lookup_keys.
+    """
+    import stripe as stripe_sdk
+
+    lookup_key = pkg["lookup_key"]
+    if lookup_key in _subscription_price_cache:
+        return _subscription_price_cache[lookup_key]
+
+    stripe_sdk.api_key = STRIPE_API_KEY
+    found = stripe_sdk.Price.list(lookup_keys=[lookup_key], expand=["data.product"], limit=1)
+    if found and found.data:
+        price_id = found.data[0].id
+        _subscription_price_cache[lookup_key] = price_id
+        return price_id
+
+    product = stripe_sdk.Product.create(name=pkg["product_name"])
+    price = stripe_sdk.Price.create(
+        unit_amount=int(round(pkg["amount"] * 100)),
+        currency=pkg["currency"],
+        recurring={"interval": pkg["interval"]},
+        product=product.id,
+        lookup_key=lookup_key,
+    )
+    _subscription_price_cache[lookup_key] = price.id
+    return price.id
 
 
 class CheckoutIn(BaseModel):
@@ -672,7 +730,21 @@ def _stripe_client(http_request: Request):
 
 @api.get("/billing/packages")
 async def billing_packages():
-    return [{"id": k, **{kk: vv for kk, vv in v.items() if kk != "tier"}} for k, v in BILLING_PACKAGES.items()]
+    out = []
+    for k, v in BILLING_PACKAGES.items():
+        out.append(
+            {
+                "id": k,
+                "amount": v["amount"],
+                "currency": v["currency"],
+                "label": v["label"],
+                "tagline": v["tagline"],
+                "duration_days": v["duration_days"],
+                "mode": v.get("mode", "payment"),
+                "interval": v.get("interval"),
+            }
+        )
+    return out
 
 
 @api.get("/billing/me")
@@ -682,7 +754,34 @@ async def billing_me(user: dict = Depends(current_user)):
     return {
         "tier": tier,
         "tier_until": (fresh or user).get("tier_until"),
+        "subscription_id": (fresh or user).get("stripe_subscription_id"),
         "limits": TIER_LIMITS[tier],
+    }
+
+
+async def _usage_counts(user_id: str) -> dict:
+    now = datetime.now(timezone.utc)
+    hour_cutoff = now - timedelta(seconds=RATE_HOUR_SECONDS)
+    day_cutoff = now - timedelta(seconds=RATE_DAY_SECONDS)
+    hour_used = await db.rate_events.count_documents({"user_id": user_id, "ts": {"$gte": hour_cutoff}})
+    day_used = await db.rate_events.count_documents({"user_id": user_id, "ts": {"$gte": day_cutoff}})
+    return {"hour_used": hour_used, "day_used": day_used}
+
+
+@api.get("/billing/usage")
+async def billing_usage(user: dict = Depends(current_user)):
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    tier = _user_tier(fresh or user)
+    limits = TIER_LIMITS[tier]
+    counts = await _usage_counts(user["id"])
+    concurrent = _rate_active.get(user["id"], 0)
+    pct_hour = round(100 * counts["hour_used"] / max(limits["hour"], 1))
+    return {
+        "tier": tier,
+        "hour": {"used": counts["hour_used"], "limit": limits["hour"], "pct": pct_hour},
+        "day": {"used": counts["day_used"], "limit": limits["day"]},
+        "concurrent": {"used": concurrent, "limit": limits["concurrent"]},
+        "warn": pct_hour >= 80,
     }
 
 
@@ -699,20 +798,51 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
     cancel_url = f"{origin}/billing?canceled=1"
 
     sc = _stripe_client(http_request)
-    req = CheckoutSessionRequest(
-        amount=float(pkg["amount"]),
-        currency=pkg["currency"],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={
-            "user_id": user["id"],
-            "user_email": user["email"],
-            "package_id": payload.package_id,
-            "tier": pkg["tier"],
-            "duration_days": str(pkg["duration_days"]),
-        },
-    )
-    session = await sc.create_checkout_session(req)
+    metadata = {
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "package_id": payload.package_id,
+        "tier": pkg["tier"],
+        "duration_days": str(pkg["duration_days"]),
+        "mode": pkg.get("mode", "payment"),
+    }
+
+    if pkg.get("mode") == "subscription":
+        try:
+            price_id = await asyncio.to_thread(_ensure_recurring_price, pkg)
+            req = CheckoutSessionRequest(
+                stripe_price_id=price_id,
+                quantity=1,
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata=metadata,
+            )
+            session = await sc.create_checkout_session(req)
+            chosen_mode = "subscription"
+        except Exception as exc:
+            # Emergent's proxied test key cannot link raw Price IDs into Checkout sessions.
+            # Gracefully fall back to a one-time $19/30-day charge so the user can still upgrade.
+            logger.warning("Subscription mode unavailable, falling back to one-off: %s", exc)
+            metadata["mode"] = "payment_fallback"
+            req = CheckoutSessionRequest(
+                amount=float(pkg["amount"]),
+                currency=pkg["currency"],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata=metadata,
+            )
+            session = await sc.create_checkout_session(req)
+            chosen_mode = "payment_fallback"
+    else:
+        req = CheckoutSessionRequest(
+            amount=float(pkg["amount"]),
+            currency=pkg["currency"],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata,
+        )
+        session = await sc.create_checkout_session(req)
+        chosen_mode = "payment"
 
     await db.payment_transactions.insert_one(
         {
@@ -724,6 +854,7 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
             "currency": pkg["currency"],
             "tier": pkg["tier"],
             "duration_days": pkg["duration_days"],
+            "mode": pkg.get("mode", "payment"),
             "status": "initiated",
             "payment_status": "unpaid",
             "applied": False,
@@ -731,7 +862,7 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
         }
     )
 
-    return {"session_id": session.session_id, "url": session.url}
+    return {"session_id": session.session_id, "url": session.url, "mode": chosen_mode}
 
 
 async def _apply_paid_session(session_id: str) -> dict:
@@ -804,6 +935,233 @@ async def stripe_webhook(request: Request):
         )
         await _apply_paid_session(event.session_id)
     return {"received": True, "event_type": event.event_type}
+
+
+# ---------- Orchestrator (Amplifier Drafts) ----------
+PLATFORMS = {
+    "x": {
+        "label": "X",
+        "char_limit": 280,
+        "voice": "Technical authority, terse, no hashtags-as-decoration. End with a single power line.",
+    },
+    "instagram": {
+        "label": "Instagram",
+        "char_limit": 2200,
+        "voice": "Visual-first caption. Short hook, then one paragraph of craft narrative. 4-6 hashtags, single line, all lowercase.",
+    },
+    "tiktok": {
+        "label": "TikTok",
+        "char_limit": 300,
+        "voice": "Punchy hook, vocal-archetype mention, music tag. 2-3 hashtags max.",
+    },
+    "linkedin": {
+        "label": "LinkedIn",
+        "char_limit": 1500,
+        "voice": "B2B case-study tone. Lead with the engineering insight, end with the equity model. No hashtags except 1-2 industry tags.",
+    },
+}
+
+UNIVERSES = {
+    "cultura": {
+        "label": "CULTURA Vibe",
+        "aesthetic": (
+            "Sleek, minimalist. Brushed chrome surfaces, candy apple red (#C8102E) accents only. "
+            "Geometric sans-serif typography (Space Grotesk). Dark canvas. No carousels."
+        ),
+        "narrative": "Pride · Equity · Engineering Craftsmanship",
+    },
+    "nothing": {
+        "label": "Nothing Protocol",
+        "aesthetic": (
+            "Dot-matrix typography. Transparent, layered surfaces. Stark white-on-black. "
+            "Candy apple red ONLY on the existing red LED indicator points — accent, not takeover. "
+            "Essentialism. Negative space generously used."
+        ),
+        "narrative": "Minimalism · Engineering · Essentialism · Soulfire meets Nothing",
+    },
+}
+
+
+class DraftGenerateIn(BaseModel):
+    artifact_id: str
+    platforms: List[str] = Field(min_length=1, max_length=4)
+    universe: str = Field(default="cultura", pattern="^(cultura|nothing)$")
+
+
+def soulfire_filter(payload: dict) -> Tuple[bool, List[str]]:
+    """Run a draft through the Soulfire content filter.
+
+    Returns (passed, reasons) — reasons populated on rejection or warnings.
+    """
+    flags: List[str] = []
+    text = (payload.get("caption") or "").lower()
+
+    forbidden = ["yo homies", "esé", "ese ", "vato", "carnal", "homie", "loco mode"]
+    for phrase in forbidden:
+        if phrase in text:
+            flags.append(f"cliche:{phrase.strip()}")
+
+    cultural_signals = ["pride", "equity", "engineering", "craftsmanship", "creator", "soulfire"]
+    if not any(sig in text for sig in cultural_signals):
+        flags.append("cultural:no_authentic_signal")
+
+    if (payload.get("audio_brief") or "") and "48khz" not in text and "48khz" not in (payload.get("audio_brief") or "").lower():
+        flags.append("technical:audio_missing_48khz")
+
+    if "creator equity" not in text and "dna" not in text and (payload.get("audio_brief") or ""):
+        flags.append("technical:audio_missing_dna_tag")
+
+    rejecting = [f for f in flags if f.startswith("cliche:")]
+    return (len(rejecting) == 0, flags)
+
+
+DRAFT_SYSTEM_PROMPT = (
+    "You are the Cultura Vibe Amplifier — Chief Distribution Officer for the Cultura Vibe ecosystem. "
+    "Tone: professional Chicano English. Authoritative, minimalist, craft-focused. NO clichés, NO forced "
+    "Spanglish (no 'vato', 'esé', 'homie', 'loco'). Cultural pride is felt through engineering excellence "
+    "and creator equity, not language caricature. "
+    "Respond with STRICT JSON only — no prose, no fences:\n"
+    "{\n"
+    '  "drafts": [\n'
+    '    { "platform": "<platform_id>", "caption": "<full post copy>", "hashtags": ["#tag1", "#tag2"],\n'
+    '      "mockup_brief": "<one-paragraph art-direction brief for the visual asset>",\n'
+    '      "audio_brief": "<empty string OR audio snippet brief — mandatory mention of 48kHz + Creator Equity DNA>",\n'
+    '      "alt_text": "<accessibility alt text for the mockup>" }\n'
+    "  ]\n"
+    "}\n"
+    "Every caption must mention pride, equity, or engineering craftsmanship — at least one. "
+    "Audio briefs (when present) MUST cite 48kHz quality AND Creator Equity DNA tagging."
+)
+
+
+async def _generate_drafts(
+    artifact: dict, platforms: List[str], universe: str
+) -> List[dict]:
+    """Call Claude Sonnet 4.5 to draft per-platform posts. Runs in a worker thread."""
+    plat_specs = "\n".join(
+        f"- {p}: voice={PLATFORMS[p]['voice']} | char_limit={PLATFORMS[p]['char_limit']}"
+        for p in platforms
+        if p in PLATFORMS
+    )
+    universe_spec = UNIVERSES[universe]
+    is_audio = artifact.get("category") == "music"
+
+    user_msg = (
+        f"Artifact: {artifact['title']}\n"
+        f"Category: {artifact['category']}\n"
+        f"Description: {artifact.get('description', '')}\n"
+        f"User Vision: {artifact.get('prompt', '')}\n\n"
+        f"Universe: {universe_spec['label']}\n"
+        f"Aesthetic Guardrails: {universe_spec['aesthetic']}\n"
+        f"Narrative Pillars: {universe_spec['narrative']}\n\n"
+        f"Generate one draft per platform:\n{plat_specs}\n\n"
+        f"Audio brief required: {'YES — this is a music artifact, lead with 48kHz + Creator Equity DNA' if is_audio else 'NO — leave audio_brief as empty string'}\n"
+        "Captions must respect each platform's char_limit. Mockup briefs are art-direction prose, not pixel specs."
+    )
+
+    session_id = f"amp-{uuid.uuid4()}"
+
+    def _run_blocking() -> str:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=DRAFT_SYSTEM_PROMPT,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        return asyncio.run(chat.send_message(UserMessage(text=user_msg)))
+
+    raw = await asyncio.to_thread(_run_blocking)
+    data = _extract_json(raw)
+    return data.get("drafts") or []
+
+
+@api.post("/drafts/generate")
+async def drafts_generate(payload: DraftGenerateIn, user: dict = Depends(current_user)):
+    artifact = await db.artifacts.find_one(
+        {"id": payload.artifact_id, "user_id": user["id"]}, {"_id": 0}
+    )
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    bad = [p for p in payload.platforms if p not in PLATFORMS]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unknown platforms: {bad}")
+
+    try:
+        raw_drafts = await _generate_drafts(artifact, payload.platforms, payload.universe)
+    except Exception as exc:
+        logger.exception("Amplifier draft generation failed")
+        raise HTTPException(status_code=502, detail=f"Amplifier failed: {exc}") from exc
+
+    persisted: List[dict] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for d in raw_drafts:
+        if not isinstance(d, dict) or d.get("platform") not in PLATFORMS:
+            continue
+        passed, flags = soulfire_filter(d)
+        doc = {
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "artifact_id": artifact["id"],
+            "artifact_title": artifact["title"],
+            "platform": d["platform"],
+            "universe": payload.universe,
+            "caption": str(d.get("caption", "")).strip(),
+            "hashtags": list(d.get("hashtags") or [])[:8],
+            "mockup_brief": str(d.get("mockup_brief", "")).strip(),
+            "audio_brief": str(d.get("audio_brief", "")).strip(),
+            "alt_text": str(d.get("alt_text", "")).strip(),
+            "soulfire_passed": passed,
+            "soulfire_flags": flags,
+            "status": "needs_review" if not passed else "drafted",
+            "created_at": now,
+        }
+        await db.drafts.insert_one(doc)
+        persisted.append({k: v for k, v in doc.items() if k != "_id"})
+
+    return {"drafts": persisted}
+
+
+@api.get("/drafts")
+async def list_drafts(user: dict = Depends(current_user)):
+    cursor = db.drafts.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1)
+    return [d async for d in cursor]
+
+
+@api.get("/drafts/{draft_id}")
+async def get_draft(draft_id: str, user: dict = Depends(current_user)):
+    doc = await db.drafts.find_one({"id": draft_id, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return doc
+
+
+@api.post("/drafts/{draft_id}/approve")
+async def approve_draft(draft_id: str, user: dict = Depends(current_user)):
+    res = await db.drafts.find_one_and_update(
+        {"id": draft_id, "user_id": user["id"]},
+        {"$set": {"status": "approved", "approved_at": datetime.now(timezone.utc).isoformat()}},
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not res:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return res
+
+
+@api.delete("/drafts/{draft_id}")
+async def delete_draft(draft_id: str, user: dict = Depends(current_user)):
+    res = await db.drafts.delete_one({"id": draft_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return {"deleted": True}
+
+
+@api.get("/orchestrator/config")
+async def orchestrator_config():
+    return {
+        "platforms": [{"id": k, **{kk: vv for kk, vv in v.items()}} for k, v in PLATFORMS.items()],
+        "universes": [{"id": k, **{kk: vv for kk, vv in v.items()}} for k, v in UNIVERSES.items()],
+    }
 
 
 # ---------- Wiring ----------

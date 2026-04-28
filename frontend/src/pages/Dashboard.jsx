@@ -101,6 +101,7 @@ export default function Dashboard() {
           } else if (payload.event === "done") {
             artifactId = payload.id;
             pushLog(`[done] artifact ${payload.id.slice(0, 8)}…`);
+            window.dispatchEvent(new Event("cv:forge-complete"));
             // Cultura Vibe completion mural
             const arte = [
               "",

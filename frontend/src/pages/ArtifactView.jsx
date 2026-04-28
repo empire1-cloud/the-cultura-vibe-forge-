@@ -1,16 +1,29 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { api, API, CATEGORIES } from "../lib/api";
 import { Button } from "../components/ui/button";
-import { Download, ArrowLeft, File as FileIcon } from "lucide-react";
+import { Download, ArrowLeft, File as FileIcon, Megaphone, X as XIcon } from "lucide-react";
+import { toast } from "sonner";
 
 const catLabel = (id) => CATEGORIES.find((c) => c.id === id)?.label || id;
 
+const PLATFORMS = [
+  { id: "x", label: "X" },
+  { id: "instagram", label: "Instagram" },
+  { id: "tiktok", label: "TikTok" },
+  { id: "linkedin", label: "LinkedIn" },
+];
+
 export default function ArtifactView() {
   const { id } = useParams();
+  const nav = useNavigate();
   const [artifact, setArtifact] = useState(null);
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [showAmplify, setShowAmplify] = useState(false);
+  const [universe, setUniverse] = useState("cultura");
+  const [picked, setPicked] = useState(["x", "instagram"]);
+  const [amplifying, setAmplifying] = useState(false);
 
   useEffect(() => {
     api
@@ -18,6 +31,33 @@ export default function ArtifactView() {
       .then((res) => setArtifact(res.data))
       .finally(() => setLoading(false));
   }, [id]);
+
+  const togglePlatform = (pid) =>
+    setPicked((prev) =>
+      prev.includes(pid) ? prev.filter((p) => p !== pid) : [...prev, pid],
+    );
+
+  const runAmplify = async () => {
+    if (picked.length === 0) {
+      toast.error("Pick at least one platform.");
+      return;
+    }
+    setAmplifying(true);
+    try {
+      const res = await api.post("/drafts/generate", {
+        artifact_id: id,
+        platforms: picked,
+        universe,
+      });
+      toast.success(`${res.data.drafts.length} drafts forged.`);
+      setShowAmplify(false);
+      nav("/drafts");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Amplifier failed");
+    } finally {
+      setAmplifying(false);
+    }
+  };
 
   const downloadZip = () => {
     const token = localStorage.getItem("arq_token");
@@ -73,6 +113,19 @@ export default function ArtifactView() {
           <Download className="h-4 w-4 mr-2" />
           Download .zip
         </Button>
+      </div>
+
+      <div className="-mt-6 mb-8 flex items-center gap-2">
+        <button
+          onClick={() => setShowAmplify(true)}
+          className="px-4 py-2 text-[10px] uppercase tracking-[0.25em] font-bold border border-[#c8102e]/40 bg-[#c8102e]/10 text-[#ff5b6f] hover:bg-[#c8102e]/20 rounded-sm inline-flex items-center gap-1.5 transition-all"
+          data-testid="amplify-button"
+        >
+          <Megaphone className="h-3 w-3" /> Amplify
+        </button>
+        <span className="text-[10px] uppercase tracking-[0.25em] text-slate-600">
+          Send to the Amplifier · drafts only
+        </span>
       </div>
 
       <div className="grid lg:grid-cols-12 gap-6">
@@ -139,6 +192,99 @@ export default function ArtifactView() {
           </details>
         </section>
       </div>
+
+      {showAmplify && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => !amplifying && setShowAmplify(false)}
+          data-testid="amplify-modal"
+        >
+          <div
+            className="bg-[#0a0a0a] border border-white/10 rounded-md max-w-lg w-full p-7 candy-glow"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.3em] text-[#c8102e] mb-1.5">
+                  Amplifier
+                </div>
+                <h3 className="font-display font-bold text-2xl tracking-tight">
+                  Draft the hustle.
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowAmplify(false)}
+                disabled={amplifying}
+                className="text-slate-500 hover:text-white"
+              >
+                <XIcon className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-2">
+              Universe
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-5">
+              {[
+                { id: "cultura", label: "Cultura Vibe", sub: "Sleek · Chrome · Candy" },
+                { id: "nothing", label: "Nothing Protocol", sub: "Dot-matrix · Transparent" },
+              ].map((u) => (
+                <button
+                  key={u.id}
+                  onClick={() => setUniverse(u.id)}
+                  disabled={amplifying}
+                  className={`text-left p-3 rounded-sm border transition-all ${
+                    universe === u.id
+                      ? "border-[#c8102e]/60 bg-[#c8102e]/10"
+                      : "border-white/10 hover:border-white/30"
+                  } ${u.id === "nothing" ? "font-mono-term" : ""}`}
+                  data-testid={`universe-${u.id}`}
+                >
+                  <div className="font-display font-semibold text-sm">{u.label}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">{u.sub}</div>
+                </button>
+              ))}
+            </div>
+
+            <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-2">
+              Platforms
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-6">
+              {PLATFORMS.map((p) => {
+                const on = picked.includes(p.id);
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => togglePlatform(p.id)}
+                    disabled={amplifying}
+                    className={`text-left p-3 rounded-sm border transition-all ${
+                      on
+                        ? "border-[#c8102e]/60 bg-[#c8102e]/10 text-white"
+                        : "border-white/10 text-slate-400 hover:border-white/30"
+                    }`}
+                    data-testid={`platform-${p.id}`}
+                  >
+                    <div className="font-display font-medium text-sm">{p.label}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <Button
+              onClick={runAmplify}
+              disabled={amplifying || picked.length === 0}
+              className="w-full con-ganas-btn rounded-sm h-11"
+              data-testid="amplify-submit"
+            >
+              <Megaphone className="h-4 w-4 mr-2" />
+              {amplifying ? "Drafting…" : `Draft ${picked.length} ${picked.length === 1 ? "post" : "posts"}`}
+            </Button>
+            <div className="mt-3 text-[10px] uppercase tracking-[0.25em] text-slate-600 text-center">
+              Drafts only · nothing is posted
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
