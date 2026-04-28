@@ -8,6 +8,7 @@ import Signup from "./pages/Signup";
 import Dashboard from "./pages/Dashboard";
 import Taller from "./pages/Taller";
 import ArtifactView from "./pages/ArtifactView";
+import Billing from "./pages/Billing";
 import "./App.css";
 
 function RequireAuth({ children }) {
@@ -74,6 +75,16 @@ function Shell() {
           <RequireAuth>
             <Layout>
               <ArtifactView />
+            </Layout>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/billing"
+        element={
+          <RequireAuth>
+            <Layout>
+              <Billing />
             </Layout>
           </RequireAuth>
         }

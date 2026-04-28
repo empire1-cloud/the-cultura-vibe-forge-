@@ -198,6 +198,8 @@ async def signup(payload: SignupIn):
         "email": payload.email.lower(),
         "display_name": payload.display_name.strip(),
         "password_hash": hash_password(payload.password),
+        "tier": "aprendiz",
+        "tier_until": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(doc)
@@ -302,7 +304,7 @@ async def forge_logic_task(payload: GenerateIn) -> Tuple[dict, str]:
 @api.post("/artifacts/generate", response_model=Artifact)
 async def generate_artifact(payload: GenerateIn, user: dict = Depends(current_user)):
     """Non-streaming forge. Kept for programmatic use."""
-    await _rate_acquire(user["id"])
+    await _rate_acquire(user)
     try:
         terminal_log: List[str] = [line.format(category=payload.category) for line in TERMINAL_SCRIPT]
         try:
@@ -343,36 +345,95 @@ def _sse(event: str, **fields) -> str:
     return f"data: {json.dumps({'event': event, **fields})}\n\n"
 
 
-# ---------- Rate limit (in-memory, per-user) ----------
-RATE_WINDOW_SECONDS = 3600
-RATE_MAX_PER_WINDOW = 20
-RATE_MAX_CONCURRENT = 2
+# ---------- Rate limit (Mongo-backed, tier-aware) ----------
+RATE_HOUR_SECONDS = 3600
+RATE_DAY_SECONDS = 86400
 
-_rate_history: dict[str, list[float]] = {}
-_rate_active: dict[str, int] = {}
+TIER_LIMITS = {
+    "aprendiz": {"hour": 20, "day": 50, "concurrent": 2},
+    "maestro": {"hour": 200, "day": 10_000, "concurrent": 5},
+}
+
+_rate_active: dict[str, int] = {}  # in-flight only — fine to keep in-memory
 _rate_lock = asyncio.Lock()
+_rate_index_ready = False
 
 
-async def _rate_acquire(user_id: str) -> None:
-    """Reserve a forge slot for the user or raise 429."""
-    now = datetime.now(timezone.utc).timestamp()
+async def _ensure_rate_index() -> None:
+    global _rate_index_ready
+    if _rate_index_ready:
+        return
+    # TTL index: documents auto-expire 24h+ after creation.
+    await db.rate_events.create_index("ts", expireAfterSeconds=RATE_DAY_SECONDS + 60)
+    await db.rate_events.create_index([("user_id", 1), ("ts", -1)])
+    _rate_index_ready = True
+
+
+def _user_tier(user: dict) -> str:
+    """Return the active tier — falls back to aprendiz if pass expired."""
+    tier = user.get("tier") or "aprendiz"
+    until = user.get("tier_until")
+    if tier == "maestro" and until:
+        try:
+            if datetime.fromisoformat(until) < datetime.now(timezone.utc):
+                return "aprendiz"
+        except ValueError:
+            return "aprendiz"
+    return tier
+
+
+async def _rate_acquire(user: dict) -> None:
+    """Reserve a forge slot or raise 429. Persists usage history in Mongo."""
+    await _ensure_rate_index()
+    user_id = user["id"]
+    tier = _user_tier(user)
+    limits = TIER_LIMITS[tier]
+    now = datetime.now(timezone.utc)
+    hour_cutoff = now - timedelta(seconds=RATE_HOUR_SECONDS)
+    day_cutoff = now - timedelta(seconds=RATE_DAY_SECONDS)
+
     async with _rate_lock:
-        history = [t for t in _rate_history.get(user_id, []) if now - t < RATE_WINDOW_SECONDS]
-        if len(history) >= RATE_MAX_PER_WINDOW:
-            oldest = history[0]
-            retry_in = int(RATE_WINDOW_SECONDS - (now - oldest))
+        hour_count = await db.rate_events.count_documents(
+            {"user_id": user_id, "ts": {"$gte": hour_cutoff}}
+        )
+        if hour_count >= limits["hour"]:
+            oldest = await db.rate_events.find_one(
+                {"user_id": user_id, "ts": {"$gte": hour_cutoff}},
+                sort=[("ts", 1)],
+            )
+            retry_in = RATE_HOUR_SECONDS
+            if oldest and "ts" in oldest:
+                retry_in = max(int(RATE_HOUR_SECONDS - (now - oldest["ts"]).total_seconds()), 1)
             raise HTTPException(
                 status_code=429,
-                detail=f"Forge limit reached ({RATE_MAX_PER_WINDOW}/hour). Retry in {retry_in}s.",
-                headers={"Retry-After": str(max(retry_in, 1))},
+                detail=(
+                    f"Hourly forge limit reached ({limits['hour']}/hr on {tier}). "
+                    f"Retry in {retry_in}s — or upgrade to Maestro."
+                ),
+                headers={"Retry-After": str(retry_in), "X-Tier": tier, "X-Upgrade": "/billing"},
             )
-        if _rate_active.get(user_id, 0) >= RATE_MAX_CONCURRENT:
+
+        day_count = await db.rate_events.count_documents(
+            {"user_id": user_id, "ts": {"$gte": day_cutoff}}
+        )
+        if day_count >= limits["day"]:
             raise HTTPException(
                 status_code=429,
-                detail=f"Too many forges in flight (max {RATE_MAX_CONCURRENT}). Wait for one to finish.",
+                detail=(
+                    f"Daily forge limit reached ({limits['day']}/day on {tier}). "
+                    "Upgrade to Maestro to keep forging."
+                ),
+                headers={"X-Tier": tier, "X-Upgrade": "/billing"},
             )
-        history.append(now)
-        _rate_history[user_id] = history
+
+        if _rate_active.get(user_id, 0) >= limits["concurrent"]:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many forges in flight (max {limits['concurrent']} on {tier}).",
+                headers={"X-Tier": tier},
+            )
+
+        await db.rate_events.insert_one({"user_id": user_id, "ts": now, "tier": tier})
         _rate_active[user_id] = _rate_active.get(user_id, 0) + 1
 
 
@@ -391,7 +452,7 @@ async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(cur
     - `file` events as each generated file is finalized
     - final `done` event with artifact id, or `error`
     """
-    await _rate_acquire(user["id"])
+    await _rate_acquire(user)
 
     queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
@@ -578,6 +639,171 @@ async def categories():
         {"id": "community", "label": "Community", "tagline": "Consent-first · Zero shadow-ban"},
         {"id": "storytelling", "label": "Storytelling", "tagline": "First-person · Oral-history export"},
     ]
+
+
+# ---------- Billing (Stripe Checkout) ----------
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+
+# Backend-defined packages — frontend never sets the price.
+BILLING_PACKAGES = {
+    "maestro_pass": {
+        "amount": 19.00,
+        "currency": "usd",
+        "label": "Maestro Pass",
+        "tagline": "30 days · 200 forges/hr · priority queue",
+        "tier": "maestro",
+        "duration_days": 30,
+    },
+}
+
+
+class CheckoutIn(BaseModel):
+    package_id: str = Field(pattern="^[a-z_]+$")
+    origin_url: str = Field(min_length=8, max_length=300)
+
+
+def _stripe_client(http_request: Request):
+    from emergentintegrations.payments.stripe.checkout import StripeCheckout
+
+    host_url = str(http_request.base_url).rstrip("/")
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    return StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+
+
+@api.get("/billing/packages")
+async def billing_packages():
+    return [{"id": k, **{kk: vv for kk, vv in v.items() if kk != "tier"}} for k, v in BILLING_PACKAGES.items()]
+
+
+@api.get("/billing/me")
+async def billing_me(user: dict = Depends(current_user)):
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    tier = _user_tier(fresh or user)
+    return {
+        "tier": tier,
+        "tier_until": (fresh or user).get("tier_until"),
+        "limits": TIER_LIMITS[tier],
+    }
+
+
+@api.post("/billing/checkout")
+async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dict = Depends(current_user)):
+    from emergentintegrations.payments.stripe.checkout import CheckoutSessionRequest
+
+    pkg = BILLING_PACKAGES.get(payload.package_id)
+    if not pkg:
+        raise HTTPException(status_code=400, detail="Unknown package")
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/billing?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/billing?canceled=1"
+
+    sc = _stripe_client(http_request)
+    req = CheckoutSessionRequest(
+        amount=float(pkg["amount"]),
+        currency=pkg["currency"],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "user_id": user["id"],
+            "user_email": user["email"],
+            "package_id": payload.package_id,
+            "tier": pkg["tier"],
+            "duration_days": str(pkg["duration_days"]),
+        },
+    )
+    session = await sc.create_checkout_session(req)
+
+    await db.payment_transactions.insert_one(
+        {
+            "session_id": session.session_id,
+            "user_id": user["id"],
+            "user_email": user["email"],
+            "package_id": payload.package_id,
+            "amount": pkg["amount"],
+            "currency": pkg["currency"],
+            "tier": pkg["tier"],
+            "duration_days": pkg["duration_days"],
+            "status": "initiated",
+            "payment_status": "unpaid",
+            "applied": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    return {"session_id": session.session_id, "url": session.url}
+
+
+async def _apply_paid_session(session_id: str) -> dict:
+    """Idempotently grant Maestro tier when a session is confirmed paid."""
+    tx = await db.payment_transactions.find_one_and_update(
+        {"session_id": session_id, "applied": {"$ne": True}, "payment_status": "paid"},
+        {"$set": {"applied": True, "applied_at": datetime.now(timezone.utc).isoformat()}},
+        return_document=True,
+    )
+    if not tx:
+        return {"granted": False}
+    until = datetime.now(timezone.utc) + timedelta(days=int(tx.get("duration_days", 30)))
+    await db.users.update_one(
+        {"id": tx["user_id"]},
+        {"$set": {"tier": tx.get("tier", "maestro"), "tier_until": until.isoformat()}},
+    )
+    return {"granted": True, "tier": tx.get("tier", "maestro"), "tier_until": until.isoformat()}
+
+
+@api.get("/billing/checkout/status/{session_id}")
+async def billing_checkout_status(
+    session_id: str, http_request: Request, user: dict = Depends(current_user)
+):
+    tx = await db.payment_transactions.find_one(
+        {"session_id": session_id, "user_id": user["id"]}, {"_id": 0}
+    )
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    sc = _stripe_client(http_request)
+    stripe_status = await sc.get_checkout_status(session_id)
+
+    payment_status = stripe_status.payment_status
+    sess_status = stripe_status.status
+
+    update = {"status": sess_status, "payment_status": payment_status}
+    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
+
+    granted = None
+    if payment_status == "paid":
+        granted = await _apply_paid_session(session_id)
+
+    return {
+        "session_id": session_id,
+        "status": sess_status,
+        "payment_status": payment_status,
+        "amount": tx["amount"],
+        "currency": tx["currency"],
+        "applied": bool(granted and granted.get("granted")) or tx.get("applied", False),
+        "tier": (granted or {}).get("tier"),
+        "tier_until": (granted or {}).get("tier_until"),
+    }
+
+
+@api.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    sc = _stripe_client(request)
+    try:
+        event = await sc.handle_webhook(body, sig)
+    except Exception as exc:
+        logger.exception("Stripe webhook verification failed")
+        raise HTTPException(status_code=400, detail=f"Invalid webhook: {exc}") from exc
+
+    if event.payment_status == "paid" and event.session_id:
+        await db.payment_transactions.update_one(
+            {"session_id": event.session_id},
+            {"$set": {"payment_status": "paid", "status": "complete"}},
+        )
+        await _apply_paid_session(event.session_id)
+    return {"received": True, "event_type": event.event_type}
 
 
 # ---------- Wiring ----------

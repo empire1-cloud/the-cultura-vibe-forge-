@@ -50,8 +50,21 @@ export default function Dashboard() {
       });
 
       if (!res.ok || !res.body) {
-        const err = await res.text().catch(() => "");
-        throw new Error(err || `HTTP ${res.status}`);
+        const errBody = await res.text().catch(() => "");
+        let detail = errBody;
+        try {
+          detail = JSON.parse(errBody)?.detail || errBody;
+        } catch (_) {
+          // not JSON
+        }
+        if (res.status === 429) {
+          toast.error(detail, {
+            action: { label: "Upgrade", onClick: () => nav("/billing") },
+            duration: 8000,
+          });
+          throw new Error(detail);
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
       }
 
       const reader = res.body.getReader();

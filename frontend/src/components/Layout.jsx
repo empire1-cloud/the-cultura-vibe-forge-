@@ -1,11 +1,25 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
+import { api } from "../lib/api";
 import { Button } from "./ui/button";
-import { LogOut, Hammer, Flame } from "lucide-react";
+import { LogOut, Hammer, Flame, Crown } from "lucide-react";
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [tier, setTier] = useState(null);
+
+  useEffect(() => {
+    if (!user) {
+      setTier(null);
+      return;
+    }
+    api
+      .get("/billing/me")
+      .then((r) => setTier(r.data.tier))
+      .catch(() => setTier("aprendiz"));
+  }, [user]);
 
   const linkCls = ({ isActive }) =>
     `px-3 py-2 text-xs uppercase tracking-[0.2em] font-bold transition-colors ${
@@ -43,12 +57,29 @@ export default function Layout({ children }) {
             <NavLink to="/taller" className={linkCls} data-testid="nav-taller">
               The Taller
             </NavLink>
+            {user && (
+              <NavLink to="/billing" className={linkCls} data-testid="nav-billing">
+                Billing
+              </NavLink>
+            )}
           </nav>
 
           <div className="flex items-center gap-3">
             {user ? (
               <>
-                <span className="text-xs text-slate-400 hidden sm:inline" data-testid="user-name">
+                <Link
+                  to="/billing"
+                  className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] uppercase tracking-[0.22em] font-bold border transition-all ${
+                    tier === "maestro"
+                      ? "border-[#c8102e]/50 bg-[#c8102e]/10 text-[#ff5b6f] candy-glow"
+                      : "border-white/10 text-slate-400 hover:border-white/30"
+                  }`}
+                  data-testid="tier-badge"
+                >
+                  <Crown className="h-3 w-3" />
+                  {tier === "maestro" ? "Maestro" : "Aprendiz"}
+                </Link>
+                <span className="text-xs text-slate-400 hidden md:inline" data-testid="user-name">
                   {user.display_name}
                 </span>
                 <Button
