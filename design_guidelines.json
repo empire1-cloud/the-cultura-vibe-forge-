@@ -1,108 +1,224 @@
-{
-  "project_name": "El Arquitecto AI",
-  "theme": "dark",
-  "archetype": "Archetype 5 (Jewel & Luxury) mixed with Technical Precision",
-  "vibe": "Cyber-Chicano",
-  "typography": {
-    "font_strategy": "The 'Editorial Future' paired with 'Terminal Utility'. Modern geometric sans-serif for headings (No Gothic), clean sans for body, and sharp mono for the terminal.",
-    "primary_font": "Space Grotesk",
-    "secondary_font": "Manrope",
-    "monospace_font": "JetBrains Mono",
-    "scale": {
-      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-bold",
-      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-semibold",
-      "h3": "text-xl sm:text-2xl tracking-tight font-medium",
-      "h4": "text-lg sm:text-xl font-medium",
-      "body": "text-base leading-relaxed",
-      "terminal": "text-sm font-mono tracking-tight",
-      "labels": "text-xs uppercase tracking-[0.2em] font-bold"
-    }
-  },
-  "colors": {
-    "background": {
-      "base": "#0A0A0A",
-      "surface": "#121212",
-      "terminal_bg": "#050505"
-    },
-    "primary": {
-      "candy_apple_red": "#C8102E",
-      "red_glow": "rgba(200, 16, 46, 0.4)",
-      "red_muted": "#8A0B20"
-    },
-    "accent": {
-      "chrome_light": "#F8FAFC",
-      "chrome_base": "#CBD5E1",
-      "chrome_dark": "#475569"
-    },
-    "text": {
-      "primary": "#F8FAFC",
-      "secondary": "#94A3B8",
-      "terminal_output": "#CBD5E1",
-      "terminal_active": "#C8102E"
-    },
-    "gradients": {
-      "chrome_metallic": "bg-gradient-to-br from-slate-200 via-slate-400 to-slate-600",
-      "chrome_border": "bg-gradient-to-b from-slate-400/50 to-transparent"
-    }
-  },
-  "layout_and_spacing": {
-    "strategy": "Generous Spacing & High Density. Use padding like p-8, p-12. Avoid default Bootstrap grids. Use bento grids for 'The Taller'.",
-    "el_centro": "Centered, large focus area. Add generous padding inside the glowing text area.",
-    "el_terminal": "Compact bento grid cell or persistent side panel. Dense data view with tight gap-2 spacing internally.",
-    "the_taller": "Grid layout (grid-cols-1 md:grid-cols-2 lg:grid-cols-3) with gap-8. High contrast bento squares."
-  },
-  "components": {
-    "buttons": {
-      "primary": "Con Ganas button: text-white bg-[#C8102E] hover:bg-[#A30D25] shadow-[0_0_15px_rgba(200,16,46,0.5)] transition-all duration-300 rounded-none border border-[#C8102E]",
-      "secondary": "bg-transparent text-slate-200 border border-slate-600 hover:border-slate-300 hover:bg-slate-800 rounded-none transition-all"
-    },
-    "inputs": {
-      "el_centro_textarea": "bg-[#0A0A0A] text-white border border-slate-700 focus:border-slate-300 focus:ring-1 focus:ring-slate-300 placeholder:text-slate-600 rounded-md p-6 text-xl shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]",
-      "auth_inputs": "bg-[#121212] border-b border-slate-600 focus:border-[#C8102E] rounded-none px-0 py-3 text-white placeholder-slate-500"
-    },
-    "surfaces": {
-      "cards": "bg-[#121212] border border-slate-800 rounded-md shadow-lg",
-      "terminal_window": "bg-[#050505] border border-slate-800 rounded-md font-mono p-4 shadow-[inset_0_0_10px_rgba(0,0,0,1)]",
-      "glass": "backdrop-blur-xl bg-black/60 border-b border-white/10"
-    }
-  },
-  "animations": {
-    "hover_states": "Crisp and immediate. Metallic sheen transitions on borders.",
-    "terminal_typing": "Use staggered appearance or typewriter effect for 'Forging the Logic...' messages.",
-    "el_centro_focus": "Subtle pulse of the candy apple red shadow or chrome border when the text area is active."
-  },
-  "accessibility_and_testing": {
-    "contrast": "Ensure text over Candy Apple Red meets 4.5:1 ratio. If needed, use white text and deepen the red slightly.",
-    "testing_attributes": [
-      "All interactive elements must have data-testid attributes.",
-      "Example: data-testid='el-centro-input'",
-      "Example: data-testid='con-ganas-button'",
-      "Example: data-testid='auth-login-button'",
-      "Example: data-testid='taller-gallery-item'"
-    ]
-  },
-  "image_urls": {
-    "auth_background": {
-      "url": "https://images.pexels.com/photos/4829063/pexels-photo-4829063.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-      "description": "Dark metallic industrial texture to serve as a deep, moody background for the Auth screens."
-    },
-    "hero_accent": {
-      "url": "https://images.pexels.com/photos/33604975/pexels-photo-33604975.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
-      "description": "Classic red car chrome detailing. Use selectively as an overlay or background accent at 10-20% opacity to reinforce the custom-shop lowrider vibe."
-    },
-    "terminal_glow": {
-      "url": "https://images.unsplash.com/photo-1759842952767-456f1b6dded8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDJ8MHwxfHNlYXJjaHwxfHxyZWQlMjBnbG93aW5nJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc3Mjk2MzczfDA&ixlib=rb-4.1.0&q=85",
-      "description": "Subtle dark red glow texture. Can be used behind 'El Terminal' or 'El Centro' as a soft, masked background glow."
-    }
-  },
-  "instructions_to_main_agent": [
-    "Strictly adhere to the English language for UI text, styled in professional Chicano English (e.g., 'Con Ganas', 'The Taller', 'El Centro'). No generic Spanglish clichés.",
-    "Implement 'El Centro' as a massive, central prompt input area.",
-    "Implement 'El Terminal' as a live-updating console panel showing agent status.",
-    "Avoid using standard card components for everything; use sharp edges or very slight 4-8px radius for a technical/custom-shop feel.",
-    "Ensure the 'Candy Apple Red' (#C8102E) is used sparingly as an accent for actions and 'Chrome' gradients are used for borders and dividers.",
-    "Use Phosphor icons or Lucide icons but keep them sharp, technical, and minimal.",
-    "Do not use generic blue/purple AI gradients.",
-    "Must implement testing attributes (data-testid) on all buttons, links, inputs, and major sections."
-  ]
+from __future__ import annotations
+import io, json, logging, os, re, uuid, zipfile, asyncio, jwt
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Tuple, Any
+
+from fastapi import FastAPI, Depends, HTTPException, Request, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, EmailStr
+from passlib.context import CryptContext
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+import stripe
+
+# --- Configuration & Logging ---
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("cultura")
+
+JWT_SECRET = os.environ.get("JWT_SECRET", "barrio-secret-key-change-me")
+JWT_ALGORITHM = "HS256"
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+
+stripe.api_key = STRIPE_API_KEY
+client = AsyncIOMotorClient(MONGO_URL)
+db = client.cultura_vibe
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+app = FastAPI(title="Cultura Vibe Engine")
+
+# --- Constants & Limits ---
+RATE_HOUR_SECONDS = 3600
+RATE_DAY_SECONDS = 86400
+TIER_LIMITS = {
+    "aprendiz": {"hour": 20, "day": 50, "concurrent": 2},
+    "maestro": {"hour": 200, "day": 10000, "concurrent": 5},
 }
+
+# --- Subscription Helper ---
+def _get_or_create_maestro_price():
+    id_key = "cultura_maestro_monthly_v1"
+    try:
+        prices = stripe.Price.list(lookup_keys=[id_key], limit=1)
+        if prices.data:
+            return prices.data[0].id
+        product = stripe.Product.create(
+            name="CULTURA Maestro Monthly Pass",
+            description="Elite Fabrication Shop pass. Full Vibe. Con Ganas.",
+            metadata={"SOULFIRE_STD": "V1"}
+        )
+        price = stripe.Price.create(
+            product=product.id,
+            unit_amount=1900,
+            currency="usd",
+            recurring={"interval": "month"},
+            lookup_key=id_key,
+            transfer_lookup_key=True
+        )
+        return price.id
+    except Exception as e:
+        logger.error(f"Stripe initialization failed: {e}")
+        return None
+
+MAESTRO_PRICE_ID = _get_or_create_maestro_price()
+
+# --- Security Utils ---
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def make_token(user_id: str) -> str:
+    payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def current_user(request: Request) -> dict:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 1, "id": 1, "email": 1, "tier": 1, "tier_until": 1, "display_name": 1})
+        if not user: raise HTTPException(status_code=401)
+        return user
+    except: raise HTTPException(status_code=401)
+
+# --- Schemas ---
+class SignupIn(BaseModel):
+    email: EmailStr
+    password: str
+    display_name: str
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    display_name: str
+
+class AuthOut(BaseModel):
+    token: str
+    user: UserOut
+
+class GenerateIn(BaseModel):
+    prompt: str
+    category: str
+    title: Optional[str] = None
+
+class CodeFile(BaseModel):
+    path: str
+    content: str
+
+class Artifact(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    description: str
+    category: str
+    prompt: str
+    refined_prompt: str
+    files: List[CodeFile]
+    terminal_log: List[str]
+    created_at: str
+
+class UsageOut(BaseModel):
+    tier: str
+    credits_remaining: int
+    concurrent_usage: int
+    forges_hour_used: int
+    forges_hour_limit: int
+    is_critical_hour: bool
+    upgrade_path: str
+
+# --- Internal Helpers ---
+async def _usage_counts(user_id: str) -> dict:
+    now = datetime.now(timezone.utc)
+    hour_cutoff = now - timedelta(hours=1)
+    hour_used = await db.rate_events.count_documents({"user_id": user_id, "ts": {"$gte": hour_cutoff}})
+    return {"hour_used": hour_used}
+
+def _user_tier(user: dict) -> str:
+    tier = user.get("tier") or "aprendiz"
+    until = user.get("tier_until")
+    if tier == "maestro" and until:
+        if datetime.fromisoformat(until) < datetime.now(timezone.utc):
+            return "aprendiz"
+    return tier
+
+# --- Routes: Auth ---
+@app.post("/auth/signup", response_model=AuthOut)
+async def signup(payload: SignupIn):
+    existing = await db.users.find_one({"email": payload.email.lower()})
+    if existing: raise HTTPException(status_code=409, detail="Email taken")
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id, "email": payload.email.lower(), "display_name": payload.display_name.strip(),
+        "password_hash": hash_password(payload.password), "tier": "aprendiz", "tier_until": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc)
+    return AuthOut(token=make_token(user_id), user=UserOut(id=user_id, email=doc["email"], display_name=doc["display_name"]))
+
+@app.post("/auth/login", response_model=AuthOut)
+async def login(payload: LoginIn):
+    user = await db.users.find_one({"email": payload.email.lower()})
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return AuthOut(token=make_token(user["id"]), user=UserOut(id=user["id"], email=user["email"], display_name=user["display_name"]))
+
+# --- Routes: Billing & Usage ---
+@app.get("/billing/packages")
+async def list_packages():
+    return [{
+        "id": "maestro_subscription", "mode": "subscription", "price_amount": 1900,
+        "name": "Maestro Pass (Monthly)", "tier": "maestro", "description": "Recurring Empire access. 200/hr. Full Vibe."
+    }]
+
+@app.get("/billing/usage", response_model=UsageOut)
+async def get_usage(user: dict = Depends(current_user)):
+    tier = _user_tier(user)
+    limit = TIER_LIMITS[tier]["hour"]
+    counts = await _usage_counts(user["id"])
+    return UsageOut(
+        tier=tier, credits_remaining=50, concurrent_usage=0, 
+        forges_hour_used=counts["hour_used"], forges_hour_limit=limit,
+        is_critical_hour=(counts["hour_used"] >= (limit * 0.8)), upgrade_path="/billing"
+    )
+
+# --- Routes: The Forge (Streaming) ---
+@app.post("/artifacts/generate-stream")
+async def generate_artifact_stream(payload: GenerateIn, user: dict = Depends(current_user)):
+    user_id = user["id"]
+    tier = _user_tier(user)
+    limit = TIER_LIMITS[tier]["hour"]
+    
+    async def event_generator():
+        counts = await _usage_counts(user_id)
+        yield f"data: {json.dumps({'event': 'log', 'msg': '> arquitecto init --soulfire'})}\n\n"
+        
+        if counts["hour_used"] >= (limit * 0.8):
+            nudge = {"event": "log", "msg": "[forge_meter] Hourly cap nearing capacity. Hustle accordingly.", "type": "system_nudge"}
+            yield f"data: {json.dumps(nudge)}\n\n"
+            await asyncio.sleep(0.3)
+
+        # Mocking LLM Forge Logic for brief demo
+        artifact_id = str(uuid.uuid4())
+        yield f"data: {json.dumps({'event': 'log', 'msg': '[forge] Calling Claude Sonnet 4.5...'})}\n\n"
+        await asyncio.sleep(1)
+        yield f"data: {json.dumps({'event': 'done', 'id': artifact_id, 'title': 'Project Forged'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# --- App Wiring ---
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

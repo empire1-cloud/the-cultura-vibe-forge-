@@ -1290,6 +1290,33 @@ async def approve_draft(draft_id: str, user: dict = Depends(current_user)):
     return res
 
 
+@api.post("/drafts/{draft_id}/mockup/regenerate")
+async def regenerate_mockup(draft_id: str, user: dict = Depends(current_user)):
+    doc = await db.drafts.find_one(
+        {"id": draft_id, "user_id": user["id"]},
+        {"_id": 0, "id": 1, "mockup_brief": 1, "universe": 1, "platform": 1},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if not doc.get("mockup_brief"):
+        raise HTTPException(status_code=400, detail="Draft has no mockup brief to render")
+
+    # Flip to rendering state; background task will flip it back.
+    await db.drafts.update_one(
+        {"id": draft_id},
+        {
+            "$set": {"mockup_ready": False},
+            "$unset": {"mockup_failed": "", "mockup_png_b64": "", "mockup_bytes": ""},
+        },
+    )
+    asyncio.create_task(
+        _render_all_mockups(
+            [(doc["id"], doc["mockup_brief"], doc["universe"], doc["platform"])]
+        )
+    )
+    return {"regenerating": True, "id": draft_id}
+
+
 @api.delete("/drafts/{draft_id}")
 async def delete_draft(draft_id: str, user: dict = Depends(current_user)):
     res = await db.drafts.delete_one({"id": draft_id, "user_id": user["id"]})

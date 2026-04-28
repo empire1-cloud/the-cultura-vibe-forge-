@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, API } from "../lib/api";
 import { Button } from "../components/ui/button";
-import { Check, Trash2, Inbox, ShieldAlert, ExternalLink, Hash, Image as ImageIcon, Volume2, Loader2 } from "lucide-react";
+import { Check, Trash2, Inbox, ShieldAlert, ExternalLink, Hash, Image as ImageIcon, Volume2, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 const PLATFORM_META = {
@@ -34,6 +34,8 @@ export default function Drafts() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
+  const [regenning, setRegenning] = useState({});
+  const [imgVer, setImgVer] = useState({});
   const pollRef = useRef(null);
 
   const refresh = () =>
@@ -74,6 +76,26 @@ export default function Drafts() {
       refresh();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Delete failed");
+    }
+  };
+
+  const regenerate = async (id) => {
+    setRegenning((p) => ({ ...p, [id]: true }));
+    try {
+      await api.post(`/drafts/${id}/mockup/regenerate`);
+      // Optimistically flip the local state so the spinner shows immediately.
+      setItems((prev) =>
+        prev.map((d) =>
+          d.id === id ? { ...d, mockup_ready: false, mockup_failed: false } : d,
+        ),
+      );
+      // Bump cache-bust version so next load pulls a fresh PNG.
+      setImgVer((p) => ({ ...p, [id]: (p[id] || 0) + 1 }));
+      toast.success("Re-rendering mockup…");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Regen failed");
+    } finally {
+      setRegenning((p) => ({ ...p, [id]: false }));
     }
   };
 
@@ -170,12 +192,12 @@ export default function Drafts() {
                 <div className="grid lg:grid-cols-5 gap-5">
                   <div className="lg:col-span-2">
                     {/* Rendered mockup */}
-                    <div className="aspect-[16/10] relative bg-[#050505] border border-white/10 rounded-sm overflow-hidden">
+                    <div className="aspect-[16/10] relative bg-[#050505] border border-white/10 rounded-sm overflow-hidden group">
                       {d.mockup_ready && !d.mockup_failed ? (
                         <img
                           src={`${API}/drafts/${d.id}/mockup.png?token=${encodeURIComponent(
                             localStorage.getItem("arq_token") || "",
-                          )}`}
+                          )}&v=${imgVer[d.id] || 0}`}
                           alt={d.alt_text || d.mockup_brief}
                           className="w-full h-full object-cover"
                           data-testid={`draft-mockup-img-${d.id}`}
@@ -193,6 +215,19 @@ export default function Drafts() {
                           <Loader2 className="h-5 w-5 mb-2 text-[#c8102e] animate-spin" />
                           Rendering · Nano Banana
                         </div>
+                      )}
+                      {d.mockup_brief && (
+                        <button
+                          onClick={() => regenerate(d.id)}
+                          disabled={!!regenning[d.id] || !d.mockup_ready}
+                          className="absolute top-2 right-2 p-1.5 rounded-sm bg-black/70 hover:bg-[#c8102e]/30 border border-white/10 hover:border-[#c8102e]/60 text-slate-300 hover:text-white transition-all opacity-0 group-hover:opacity-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="Regenerate mockup"
+                          data-testid={`draft-regen-${d.id}`}
+                        >
+                          <RefreshCw
+                            className={`h-3.5 w-3.5 ${regenning[d.id] ? "animate-spin" : ""}`}
+                          />
+                        </button>
                       )}
                     </div>
                   </div>
