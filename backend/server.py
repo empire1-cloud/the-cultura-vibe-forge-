@@ -1074,6 +1074,97 @@ async def _generate_drafts(
     return data.get("drafts") or []
 
 
+# ---------- Nano Banana mockup rendering ----------
+UNIVERSE_IMAGE_SUFFIX = {
+    "cultura": (
+        "High-fidelity photorealistic product mockup. Dark charcoal canvas (#0a0a0a). "
+        "Brushed chrome accents, candy apple red (#C8102E) highlights used sparingly. "
+        "Minimalist geometric layout. 16:9 aspect ratio. Cinematic side lighting. No text, "
+        "no logos, no watermarks. Pure product shot, gallery quality."
+    ),
+    "nothing": (
+        "Minimalist photorealistic product mockup in the style of Nothing. "
+        "Transparent/translucent surfaces revealing internal components. Dot-matrix typography "
+        "where text appears. Stark white-on-black palette. Candy apple red (#C8102E) ONLY on "
+        "tiny LED accent points. Essentialism. Generous negative space. 16:9 aspect. No logos."
+    ),
+}
+
+
+def _build_image_prompt(mockup_brief: str, universe: str, platform: str) -> str:
+    universe_note = UNIVERSE_IMAGE_SUFFIX.get(universe, UNIVERSE_IMAGE_SUFFIX["cultura"])
+    return (
+        f"{mockup_brief.strip()}\n\n"
+        f"Universe: {UNIVERSES[universe]['label']}. {universe_note}\n"
+        f"Target platform: {PLATFORMS[platform]['label']} — visual should feel native to the feed."
+    )
+
+
+async def _render_mockup_png(brief: str, universe: str, platform: str) -> Optional[bytes]:
+    """Render a PNG for a single draft via Gemini Nano Banana. Runs in a thread."""
+    if not brief:
+        return None
+    prompt = _build_image_prompt(brief, universe, platform)
+    session_id = f"amp-img-{uuid.uuid4()}"
+
+    def _run_blocking():
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message="You render minimalist, high-fidelity product mockup images with cultural authenticity.",
+        )
+        chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(
+            modalities=["image", "text"]
+        )
+        return asyncio.run(chat.send_message_multimodal_response(UserMessage(text=prompt)))
+
+    try:
+        _text, images = await asyncio.to_thread(_run_blocking)
+    except Exception as exc:
+        logger.warning("Nano Banana render failed for %s/%s: %s", universe, platform, exc)
+        return None
+
+    if not images:
+        return None
+    img = images[0]
+    try:
+        import base64 as _b64
+
+        return _b64.b64decode(img["data"])
+    except Exception:
+        return None
+
+
+async def _render_all_mockups(draft_ids_with_briefs: List[Tuple[str, str, str, str]]) -> None:
+    """Background task: render every draft's mockup in parallel and persist."""
+    async def _one(draft_id: str, brief: str, universe: str, platform: str):
+        png = await _render_mockup_png(brief, universe, platform)
+        import base64 as _b64
+
+        if png:
+            await db.drafts.update_one(
+                {"id": draft_id},
+                {
+                    "$set": {
+                        "mockup_png_b64": _b64.b64encode(png).decode("ascii"),
+                        "mockup_bytes": len(png),
+                        "mockup_ready": True,
+                        "mockup_rendered_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+        else:
+            await db.drafts.update_one(
+                {"id": draft_id},
+                {"$set": {"mockup_ready": True, "mockup_failed": True}},
+            )
+
+    await asyncio.gather(
+        *[_one(did, brief, uni, plat) for (did, brief, uni, plat) in draft_ids_with_briefs],
+        return_exceptions=True,
+    )
+
+
 @api.post("/drafts/generate")
 async def drafts_generate(payload: DraftGenerateIn, user: dict = Depends(current_user)):
     artifact = await db.artifacts.find_one(
@@ -1093,6 +1184,7 @@ async def drafts_generate(payload: DraftGenerateIn, user: dict = Depends(current
         raise HTTPException(status_code=502, detail=f"Amplifier failed: {exc}") from exc
 
     persisted: List[dict] = []
+    to_render: List[Tuple[str, str, str, str]] = []
     now = datetime.now(timezone.utc).isoformat()
     for d in raw_drafts:
         if not isinstance(d, dict) or d.get("platform") not in PLATFORMS:
@@ -1113,26 +1205,76 @@ async def drafts_generate(payload: DraftGenerateIn, user: dict = Depends(current
             "soulfire_passed": passed,
             "soulfire_flags": flags,
             "status": "needs_review" if not passed else "drafted",
+            "mockup_ready": False,
             "created_at": now,
         }
         await db.drafts.insert_one(doc)
+        # Persisted echo (without the heavy _id / png fields)
         persisted.append({k: v for k, v in doc.items() if k != "_id"})
+        if doc["mockup_brief"]:
+            to_render.append((doc["id"], doc["mockup_brief"], doc["universe"], doc["platform"]))
 
-    return {"drafts": persisted}
+    # Spawn background mockup rendering — response returns instantly, images arrive async.
+    if to_render:
+        asyncio.create_task(_render_all_mockups(to_render))
+
+    return {"drafts": persisted, "rendering": len(to_render)}
 
 
 @api.get("/drafts")
 async def list_drafts(user: dict = Depends(current_user)):
-    cursor = db.drafts.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1)
+    cursor = db.drafts.find(
+        {"user_id": user["id"]},
+        {"_id": 0, "mockup_png_b64": 0},
+    ).sort("created_at", -1)
     return [d async for d in cursor]
 
 
 @api.get("/drafts/{draft_id}")
 async def get_draft(draft_id: str, user: dict = Depends(current_user)):
-    doc = await db.drafts.find_one({"id": draft_id, "user_id": user["id"]}, {"_id": 0})
+    doc = await db.drafts.find_one(
+        {"id": draft_id, "user_id": user["id"]},
+        {"_id": 0, "mockup_png_b64": 0},
+    )
     if not doc:
         raise HTTPException(status_code=404, detail="Draft not found")
     return doc
+
+
+@api.get("/drafts/{draft_id}/mockup.png")
+async def get_draft_mockup(
+    draft_id: str,
+    request: Request,
+    token: Optional[str] = Query(default=None),
+):
+    user_id: Optional[str] = None
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            user_id = payload["sub"]
+        except jwt.PyJWTError:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    else:
+        u = await current_user(request)
+        user_id = u["id"]
+
+    doc = await db.drafts.find_one(
+        {"id": draft_id, "user_id": user_id},
+        {"_id": 0, "mockup_png_b64": 1, "mockup_ready": 1},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if not doc.get("mockup_png_b64"):
+        raise HTTPException(status_code=404, detail="Mockup not ready")
+
+    import base64 as _b64
+
+    png = _b64.b64decode(doc["mockup_png_b64"])
+    return StreamingResponse(
+        io.BytesIO(png),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @api.post("/drafts/{draft_id}/approve")

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, API } from "../lib/api";
 import { Button } from "../components/ui/button";
-import { Check, Trash2, Inbox, ShieldAlert, ExternalLink, Hash, Image as ImageIcon, Volume2 } from "lucide-react";
+import { Check, Trash2, Inbox, ShieldAlert, ExternalLink, Hash, Image as ImageIcon, Volume2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const PLATFORM_META = {
@@ -34,6 +34,7 @@ export default function Drafts() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
+  const pollRef = useRef(null);
 
   const refresh = () =>
     api.get("/drafts").then((r) => {
@@ -43,7 +44,18 @@ export default function Drafts() {
 
   useEffect(() => {
     refresh();
+    return () => clearTimeout(pollRef.current);
   }, []);
+
+  // Poll while any draft is still rendering its mockup
+  useEffect(() => {
+    clearTimeout(pollRef.current);
+    const pending = items.some((d) => !d.mockup_ready);
+    if (pending) {
+      pollRef.current = setTimeout(refresh, 4000);
+    }
+    return () => clearTimeout(pollRef.current);
+  }, [items]);
 
   const approve = async (id) => {
     try {
@@ -156,6 +168,35 @@ export default function Drafts() {
                 </div>
 
                 <div className="grid lg:grid-cols-5 gap-5">
+                  <div className="lg:col-span-2">
+                    {/* Rendered mockup */}
+                    <div className="aspect-[16/10] relative bg-[#050505] border border-white/10 rounded-sm overflow-hidden">
+                      {d.mockup_ready && !d.mockup_failed ? (
+                        <img
+                          src={`${API}/drafts/${d.id}/mockup.png?token=${encodeURIComponent(
+                            localStorage.getItem("arq_token") || "",
+                          )}`}
+                          alt={d.alt_text || d.mockup_brief}
+                          className="w-full h-full object-cover"
+                          data-testid={`draft-mockup-img-${d.id}`}
+                        />
+                      ) : d.mockup_failed ? (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-[11px]">
+                          <ImageIcon className="h-5 w-5 mb-2" />
+                          Mockup render unavailable
+                        </div>
+                      ) : (
+                        <div
+                          className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 text-[11px] uppercase tracking-[0.25em]"
+                          data-testid={`draft-mockup-loading-${d.id}`}
+                        >
+                          <Loader2 className="h-5 w-5 mb-2 text-[#c8102e] animate-spin" />
+                          Rendering · Nano Banana
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="lg:col-span-3 space-y-3">
                     <div>
                       <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-1">
@@ -183,15 +224,12 @@ export default function Drafts() {
                         ))}
                       </div>
                     )}
-                  </div>
-
-                  <div className="lg:col-span-2 space-y-3 text-sm">
                     {d.mockup_brief && (
-                      <div>
+                      <div className="pt-2">
                         <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 mb-1 inline-flex items-center gap-1">
                           <ImageIcon className="h-3 w-3" /> Mockup Brief
                         </div>
-                        <p className="text-slate-300 leading-relaxed">{d.mockup_brief}</p>
+                        <p className="text-[12px] text-slate-400 leading-relaxed">{d.mockup_brief}</p>
                       </div>
                     )}
                     {d.audio_brief && (
@@ -199,7 +237,7 @@ export default function Drafts() {
                         <div className="text-[10px] uppercase tracking-[0.3em] text-[#c8102e] mb-1 inline-flex items-center gap-1">
                           <Volume2 className="h-3 w-3" /> 48kHz · Audio Brief
                         </div>
-                        <p className="text-slate-300 leading-relaxed">{d.audio_brief}</p>
+                        <p className="text-[12px] text-slate-400 leading-relaxed">{d.audio_brief}</p>
                       </div>
                     )}
                   </div>
