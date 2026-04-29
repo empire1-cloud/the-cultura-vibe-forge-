@@ -350,8 +350,11 @@ RATE_HOUR_SECONDS = 3600
 RATE_DAY_SECONDS = 86400
 
 TIER_LIMITS = {
-    "aprendiz": {"hour": 20, "day": 50, "concurrent": 2},
-    "maestro": {"hour": 200, "day": 10_000, "concurrent": 5},
+    "aprendiz": {"hour": 5, "day": 10, "concurrent": 1, "included_monthly": 0},
+    "maestro_elite": {"hour": 20, "day": 60, "concurrent": 3, "included_monthly": 10, "overage_price": 10.00},
+    "maestro_master": {"hour": 60, "day": 200, "concurrent": 5, "included_monthly": 50, "overage_price": 7.00},
+    # Legacy alias so existing Maestro users keep working until they pick a new tier.
+    "maestro": {"hour": 20, "day": 60, "concurrent": 3, "included_monthly": 10, "overage_price": 10.00},
 }
 
 _rate_active: dict[str, int] = {}  # in-flight only — fine to keep in-memory
@@ -655,28 +658,52 @@ async def categories():
 
 # ---------- Billing (Stripe Checkout) ----------
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+LIVE_MODE = STRIPE_API_KEY.startswith("sk_live_")
 
 # Backend-defined packages — frontend never sets the price.
 BILLING_PACKAGES = {
-    "maestro_monthly": {
-        "amount": 19.00,
+    "maestro_elite": {
+        "amount": 40.00,
         "currency": "usd",
-        "label": "Maestro · Monthly",
-        "tagline": "Recurring · cancel anytime · 200 forges/hr",
-        "tier": "maestro",
+        "label": "Maestro Elite",
+        "tagline": "$40/mo · 10 forges included · $10 per overage",
+        "tier": "maestro_elite",
         "duration_days": 30,
         "mode": "subscription",
         "interval": "month",
-        "lookup_key": "cultura_maestro_monthly_v1",
-        "product_name": "Cultura Vibe — Maestro",
+        "lookup_key": "cultura_maestro_elite_v1",
+        "product_name": "Cultura Vibe — Maestro Elite",
     },
-    "maestro_pass": {
-        "amount": 19.00,
+    "maestro_master": {
+        "amount": 149.00,
         "currency": "usd",
-        "label": "Maestro Pass · 30 days",
-        "tagline": "One-time · 30 days · 200 forges/hr",
-        "tier": "maestro",
+        "label": "Maestro Master",
+        "tagline": "$149/mo · 50 forges included · $7 per overage",
+        "tier": "maestro_master",
         "duration_days": 30,
+        "mode": "subscription",
+        "interval": "month",
+        "lookup_key": "cultura_maestro_master_v1",
+        "product_name": "Cultura Vibe — Maestro Master",
+    },
+    "credits_elite_1": {
+        "amount": 10.00,
+        "currency": "usd",
+        "label": "+1 Overage Credit · Elite",
+        "tagline": "One extra forge at Elite rate",
+        "tier_required": "maestro_elite",
+        "credits": 1,
+        "duration_days": 0,
+        "mode": "payment",
+    },
+    "credits_master_1": {
+        "amount": 7.00,
+        "currency": "usd",
+        "label": "+1 Overage Credit · Master",
+        "tagline": "One extra forge at Master rate",
+        "tier_required": "maestro_master",
+        "credits": 1,
+        "duration_days": 0,
         "mode": "payment",
     },
 }
@@ -852,9 +879,10 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
             "package_id": payload.package_id,
             "amount": pkg["amount"],
             "currency": pkg["currency"],
-            "tier": pkg["tier"],
+            "tier": pkg.get("tier"),
             "duration_days": pkg["duration_days"],
             "mode": pkg.get("mode", "payment"),
+            "credits": pkg.get("credits", 0),
             "status": "initiated",
             "payment_status": "unpaid",
             "applied": False,
@@ -866,7 +894,7 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
 
 
 async def _apply_paid_session(session_id: str) -> dict:
-    """Idempotently grant Maestro tier when a session is confirmed paid."""
+    """Idempotently grant tier upgrade OR credit top-up when Stripe confirms payment."""
     tx = await db.payment_transactions.find_one_and_update(
         {"session_id": session_id, "applied": {"$ne": True}, "payment_status": "paid"},
         {"$set": {"applied": True, "applied_at": datetime.now(timezone.utc).isoformat()}},
@@ -874,12 +902,29 @@ async def _apply_paid_session(session_id: str) -> dict:
     )
     if not tx:
         return {"granted": False}
+
+    # Credit-pack purchase: just bump the user's credit balance.
+    credits = tx.get("credits") or 0
+    if credits:
+        await db.users.update_one(
+            {"id": tx["user_id"]},
+            {"$inc": {"forge_credits": int(credits)}},
+        )
+        return {"granted": True, "credits_added": int(credits)}
+
+    # Tier upgrade (Elite/Master): set tier + expiry.
     until = datetime.now(timezone.utc) + timedelta(days=int(tx.get("duration_days", 30)))
     await db.users.update_one(
         {"id": tx["user_id"]},
-        {"$set": {"tier": tx.get("tier", "maestro"), "tier_until": until.isoformat()}},
+        {
+            "$set": {
+                "tier": tx.get("tier", "maestro_elite"),
+                "tier_until": until.isoformat(),
+                "cycle_started_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
     )
-    return {"granted": True, "tier": tx.get("tier", "maestro"), "tier_until": until.isoformat()}
+    return {"granted": True, "tier": tx.get("tier"), "tier_until": until.isoformat()}
 
 
 @api.get("/billing/checkout/status/{session_id}")
