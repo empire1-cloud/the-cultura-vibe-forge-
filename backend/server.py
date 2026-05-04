@@ -933,7 +933,7 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
 
     await db.payment_transactions.insert_one(
         {
-            "session_id": session.session_id,
+            "session_id": session.id,
             "user_id": user["id"],
             "user_email": user["email"],
             "package_id": payload.package_id,
@@ -950,7 +950,7 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
         }
     )
 
-    return {"session_id": session.session_id, "url": session.url, "mode": chosen_mode}
+    return {"session_id": session.id, "url": session.url, "mode": chosen_mode}
 
 
 async def _apply_paid_session(session_id: str) -> dict:
