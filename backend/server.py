@@ -709,7 +709,7 @@ async def categories():
 
 # ---------- Billing (Stripe Checkout) ----------
 # Accept either name — playbook uses STRIPE_API_KEY, Stripe docs commonly say STRIPE_SECRET_KEY.
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY") or os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_API_KEY = (os.environ.get("STRIPE_API_KEY") or os.environ.get("STRIPE_SECRET_KEY", "")).strip()
 LIVE_MODE = STRIPE_API_KEY.startswith("sk_live_")
 
 # Backend-defined packages — frontend never sets the price.
