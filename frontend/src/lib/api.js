@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://cultura-backend-e2q5oemapa-uc.a.run.app";
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
