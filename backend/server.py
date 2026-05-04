@@ -26,7 +26,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
 from starlette.middleware.cors import CORSMiddleware
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+import httpx  # direct Anthropic calls — no emergentintegrations needed
 
 from executor import run_artifact as _exec_run_artifact, detect_plan as _exec_detect_plan
 
@@ -290,15 +290,17 @@ async def forge_logic_task(payload: GenerateIn) -> Tuple[dict, str]:
     refined = cultural_refinement(payload.prompt, payload.category)
     session_id = f"forge-{uuid.uuid4()}"
 
-    def _run_blocking() -> str:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=SYSTEM_PROMPT,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-        return asyncio.run(chat.send_message(UserMessage(text=refined)))
+    async def _call_claude(prompt_text: str, sys_prompt: str) -> str:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": EMERGENT_LLM_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-5-20250929", "max_tokens": 4096, "system": sys_prompt, "messages": [{"role": "user", "content": prompt_text}]},
+            )
+            resp.raise_for_status()
+            return resp.json()["content"][0]["text"]
 
-    raw = await asyncio.to_thread(_run_blocking)
+    raw = await _call_claude(refined, SYSTEM_PROMPT)
     data = _extract_json(raw)
     return data, refined
 
@@ -797,12 +799,13 @@ class CheckoutIn(BaseModel):
     origin_url: str = Field(min_length=8, max_length=300)
 
 
-def _stripe_client(http_request: Request):
-    from emergentintegrations.payments.stripe.checkout import StripeCheckout
-
-    host_url = str(http_request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    return StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+def _stripe_client(http_request: Request = None):
+    try:
+        import stripe as _stripe
+        _stripe.api_key = STRIPE_API_KEY
+        return _stripe
+    except ImportError:
+        raise HTTPException(503, "stripe package not installed")
 
 
 @api.get("/billing/packages")
@@ -885,7 +888,8 @@ async def billing_usage(user: dict = Depends(current_user)):
 
 @api.post("/billing/checkout")
 async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dict = Depends(current_user)):
-    from emergentintegrations.payments.stripe.checkout import CheckoutSessionRequest
+    import stripe as _stripe
+    _stripe.api_key = STRIPE_API_KEY
 
     pkg = BILLING_PACKAGES.get(payload.package_id)
     if not pkg:
@@ -895,53 +899,37 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
     success_url = f"{origin}/billing?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/billing?canceled=1"
 
-    sc = _stripe_client(http_request)
     metadata = {
-        "user_id": user["id"],
-        "user_email": user["email"],
+        "user_id": str(user["id"]),
+        "user_email": user.get("email", ""),
         "package_id": payload.package_id,
         "tier": pkg.get("tier") or pkg.get("tier_required") or "credits",
-        "duration_days": str(pkg["duration_days"]),
         "mode": pkg.get("mode", "payment"),
         "credits": str(pkg.get("credits", 0)),
     }
 
-    if pkg.get("mode") == "subscription":
-        try:
-            price_id = await asyncio.to_thread(_ensure_recurring_price, pkg)
-            req = CheckoutSessionRequest(
-                stripe_price_id=price_id,
-                quantity=1,
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata=metadata,
-            )
-            session = await sc.create_checkout_session(req)
-            chosen_mode = "subscription"
-        except Exception as exc:
-            # Emergent's proxied test key cannot link raw Price IDs into Checkout sessions.
-            # Gracefully fall back to a one-time $19/30-day charge so the user can still upgrade.
-            logger.warning("Subscription mode unavailable, falling back to one-off: %s", exc)
-            metadata["mode"] = "payment_fallback"
-            req = CheckoutSessionRequest(
-                amount=float(pkg["amount"]),
-                currency=pkg["currency"],
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata=metadata,
-            )
-            session = await sc.create_checkout_session(req)
-            chosen_mode = "payment_fallback"
-    else:
-        req = CheckoutSessionRequest(
-            amount=float(pkg["amount"]),
-            currency=pkg["currency"],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            metadata=metadata,
-        )
-        session = await sc.create_checkout_session(req)
-        chosen_mode = "payment"
+    line_item = {
+        "price_data": {
+            "currency": pkg.get("currency", "usd"),
+            "unit_amount": int(float(pkg["amount"]) * 100),
+            "product_data": {"name": pkg.get("label", payload.package_id)},
+            **({"recurring": {"interval": "month"}} if pkg.get("mode") == "subscription" else {}),
+        },
+        "quantity": 1,
+    }
+
+    session_params = {
+        "mode": "subscription" if pkg.get("mode") == "subscription" else "payment",
+        "line_items": [line_item],
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "metadata": metadata,
+    }
+    if user.get("email"):
+        session_params["customer_email"] = user["email"]
+
+    session = await asyncio.to_thread(_stripe.checkout.Session.create, **session_params)
+    chosen_mode = session_params["mode"]
 
     await db.payment_transactions.insert_one(
         {
@@ -1178,15 +1166,17 @@ async def _generate_drafts(
 
     session_id = f"amp-{uuid.uuid4()}"
 
-    def _run_blocking() -> str:
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=DRAFT_SYSTEM_PROMPT,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-        return asyncio.run(chat.send_message(UserMessage(text=user_msg)))
+    async def _call_claude_draft(prompt_text: str, sys_prompt: str) -> str:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": EMERGENT_LLM_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-5-20250929", "max_tokens": 2048, "system": sys_prompt, "messages": [{"role": "user", "content": prompt_text}]},
+            )
+            resp.raise_for_status()
+            return resp.json()["content"][0]["text"]
 
-    raw = await asyncio.to_thread(_run_blocking)
+    raw = await _call_claude_draft(user_msg, DRAFT_SYSTEM_PROMPT)
     data = _extract_json(raw)
     return data.get("drafts") or []
 
@@ -1224,22 +1214,9 @@ async def _render_mockup_png(brief: str, universe: str, platform: str) -> Option
     prompt = _build_image_prompt(brief, universe, platform)
     session_id = f"amp-img-{uuid.uuid4()}"
 
-    def _run_blocking():
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message="You render minimalist, high-fidelity product mockup images with cultural authenticity.",
-        )
-        chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(
-            modalities=["image", "text"]
-        )
-        return asyncio.run(chat.send_message_multimodal_response(UserMessage(text=prompt)))
-
-    try:
-        _text, images = await asyncio.to_thread(_run_blocking)
-    except Exception as exc:
-        logger.warning("Nano Banana render failed for %s/%s: %s", universe, platform, exc)
-        return None
+    # Gemini multimodal image generation pending direct Gemini API integration
+    logger.info("Nano Banana render requested for %s/%s (multimodal stubbed)", universe, platform)
+    return None
 
     if not images:
         return None
