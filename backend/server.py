@@ -28,6 +28,8 @@ from starlette.middleware.cors import CORSMiddleware
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from executor import run_artifact as _exec_run_artifact, detect_plan as _exec_detect_plan
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
@@ -351,10 +353,11 @@ RATE_DAY_SECONDS = 86400
 
 TIER_LIMITS = {
     "aprendiz": {"hour": 5, "day": 10, "concurrent": 1, "included_monthly": 0},
-    "maestro_elite": {"hour": 20, "day": 60, "concurrent": 3, "included_monthly": 10, "overage_price": 10.00},
-    "maestro_master": {"hour": 60, "day": 200, "concurrent": 5, "included_monthly": 50, "overage_price": 7.00},
-    # Legacy alias so existing Maestro users keep working until they pick a new tier.
-    "maestro": {"hour": 20, "day": 60, "concurrent": 3, "included_monthly": 10, "overage_price": 10.00},
+    "soulfire": {"hour": 20, "day": 100, "concurrent": 2, "included_monthly": 25, "overage_price": 2.00},
+    "maestro": {"hour": 60, "day": 300, "concurrent": 3, "included_monthly": 100, "overage_price": 1.00},
+    # Legacy aliases for backward compat
+    "maestro_elite": {"hour": 20, "day": 100, "concurrent": 2, "included_monthly": 25, "overage_price": 2.00},
+    "maestro_master": {"hour": 60, "day": 300, "concurrent": 3, "included_monthly": 100, "overage_price": 1.00},
 }
 
 _rate_active: dict[str, int] = {}  # in-flight only — fine to keep in-memory
@@ -386,7 +389,12 @@ def _user_tier(user: dict) -> str:
 
 
 async def _rate_acquire(user: dict) -> None:
-    """Reserve a forge slot or raise 429. Persists usage history in Mongo."""
+    """Reserve a forge slot or raise 429. Persists usage history in Mongo.
+
+    Paid tiers (Elite/Master) have an `included_monthly` quota. Once exhausted,
+    the user must have `forge_credits > 0` — we burn one credit per overage forge.
+    Without credits, we 429 with a credit-pack CTA.
+    """
     await _ensure_rate_index()
     user_id = user["id"]
     tier = _user_tier(user)
@@ -411,7 +419,7 @@ async def _rate_acquire(user: dict) -> None:
                 status_code=429,
                 detail=(
                     f"Hourly forge limit reached ({limits['hour']}/hr on {tier}). "
-                    f"Retry in {retry_in}s — or upgrade to Maestro."
+                    f"Retry in {retry_in}s — or upgrade."
                 ),
                 headers={"Retry-After": str(retry_in), "X-Tier": tier, "X-Upgrade": "/billing"},
             )
@@ -424,7 +432,7 @@ async def _rate_acquire(user: dict) -> None:
                 status_code=429,
                 detail=(
                     f"Daily forge limit reached ({limits['day']}/day on {tier}). "
-                    "Upgrade to Maestro to keep forging."
+                    "Upgrade to keep forging."
                 ),
                 headers={"X-Tier": tier, "X-Upgrade": "/billing"},
             )
@@ -436,7 +444,48 @@ async def _rate_acquire(user: dict) -> None:
                 headers={"X-Tier": tier},
             )
 
-        await db.rate_events.insert_one({"user_id": user_id, "ts": now, "tier": tier})
+        # Monthly included-quota check (paid tiers only).
+        included = limits.get("included_monthly", 0) or 0
+        cycle_started = (user or {}).get("cycle_started_at")
+        cycle_used = 0
+        used_credit = False
+        if included > 0 and cycle_started:
+            try:
+                cycle_dt = datetime.fromisoformat(cycle_started)
+                cycle_used = await db.rate_events.count_documents(
+                    {"user_id": user_id, "ts": {"$gte": cycle_dt}, "billable": True}
+                )
+            except ValueError:
+                cycle_used = 0
+
+            if cycle_used >= included:
+                # Overage: try to burn a credit atomically.
+                upd = await db.users.find_one_and_update(
+                    {"id": user_id, "forge_credits": {"$gt": 0}},
+                    {"$inc": {"forge_credits": -1}},
+                    return_document=True,
+                )
+                if not upd:
+                    overage_price = limits.get("overage_price")
+                    raise HTTPException(
+                        status_code=402,
+                        detail=(
+                            f"Included {included} forges used this cycle. "
+                            f"Buy a credit ({'$' + format(overage_price, '.2f') if overage_price else 'overage rate'}) to continue."
+                        ),
+                        headers={"X-Tier": tier, "X-Upgrade": "/billing", "X-Need-Credit": "1"},
+                    )
+                used_credit = True
+
+        await db.rate_events.insert_one(
+            {
+                "user_id": user_id,
+                "ts": now,
+                "tier": tier,
+                "billable": True,
+                "billed_via": "credit" if used_credit else "included",
+            }
+        )
         _rate_active[user_id] = _rate_active.get(user_id, 0) + 1
 
 
@@ -657,52 +706,53 @@ async def categories():
 
 
 # ---------- Billing (Stripe Checkout) ----------
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+# Accept either name — playbook uses STRIPE_API_KEY, Stripe docs commonly say STRIPE_SECRET_KEY.
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY") or os.environ.get("STRIPE_SECRET_KEY", "")
 LIVE_MODE = STRIPE_API_KEY.startswith("sk_live_")
 
 # Backend-defined packages — frontend never sets the price.
 BILLING_PACKAGES = {
-    "maestro_elite": {
-        "amount": 40.00,
+    "soulfire": {
+        "amount": 29.00,
         "currency": "usd",
-        "label": "Maestro Elite",
-        "tagline": "$40/mo · 10 forges included · $10 per overage",
-        "tier": "maestro_elite",
+        "label": "Soulfire",
+        "tagline": "$29/mo · 25 executions included · $2 per overage execution",
+        "tier": "soulfire",
         "duration_days": 30,
         "mode": "subscription",
         "interval": "month",
-        "lookup_key": "cultura_maestro_elite_v1",
-        "product_name": "Cultura Vibe — Maestro Elite",
+        "lookup_key": "cultura_soulfire_v1",
+        "product_name": "Cultura Vibe — Soulfire",
     },
-    "maestro_master": {
+    "maestro": {
         "amount": 149.00,
         "currency": "usd",
-        "label": "Maestro Master",
-        "tagline": "$149/mo · 50 forges included · $7 per overage",
-        "tier": "maestro_master",
+        "label": "Maestro",
+        "tagline": "$149/mo · 100 executions included · $1 per overage · demo reel",
+        "tier": "maestro",
         "duration_days": 30,
         "mode": "subscription",
         "interval": "month",
-        "lookup_key": "cultura_maestro_master_v1",
-        "product_name": "Cultura Vibe — Maestro Master",
+        "lookup_key": "cultura_maestro_v1",
+        "product_name": "Cultura Vibe — Maestro",
     },
-    "credits_elite_1": {
+    "credits_soulfire_5": {
         "amount": 10.00,
         "currency": "usd",
-        "label": "+1 Overage Credit · Elite",
-        "tagline": "One extra forge at Elite rate",
-        "tier_required": "maestro_elite",
-        "credits": 1,
+        "label": "+5 Execution Credits · Soulfire",
+        "tagline": "5 extra executions at $2 each",
+        "tier_required": "soulfire",
+        "credits": 5,
         "duration_days": 0,
         "mode": "payment",
     },
-    "credits_master_1": {
-        "amount": 7.00,
+    "credits_maestro_10": {
+        "amount": 10.00,
         "currency": "usd",
-        "label": "+1 Overage Credit · Master",
-        "tagline": "One extra forge at Master rate",
-        "tier_required": "maestro_master",
-        "credits": 1,
+        "label": "+10 Execution Credits · Maestro",
+        "tagline": "10 extra executions at $1 each",
+        "tier_required": "maestro",
+        "credits": 10,
         "duration_days": 0,
         "mode": "payment",
     },
@@ -769,9 +819,12 @@ async def billing_packages():
                 "duration_days": v["duration_days"],
                 "mode": v.get("mode", "payment"),
                 "interval": v.get("interval"),
+                "tier": v.get("tier"),
+                "tier_required": v.get("tier_required"),
+                "credits": v.get("credits", 0),
             }
         )
-    return out
+    return {"packages": out, "live_mode": LIVE_MODE}
 
 
 @api.get("/billing/me")
@@ -783,6 +836,8 @@ async def billing_me(user: dict = Depends(current_user)):
         "tier_until": (fresh or user).get("tier_until"),
         "subscription_id": (fresh or user).get("stripe_subscription_id"),
         "limits": TIER_LIMITS[tier],
+        "forge_credits": (fresh or user).get("forge_credits", 0),
+        "live_mode": LIVE_MODE,
     }
 
 
@@ -803,12 +858,28 @@ async def billing_usage(user: dict = Depends(current_user)):
     counts = await _usage_counts(user["id"])
     concurrent = _rate_active.get(user["id"], 0)
     pct_hour = round(100 * counts["hour_used"] / max(limits["hour"], 1))
+
+    # Cycle-included usage (for paid tiers).
+    included = limits.get("included_monthly", 0)
+    cycle_used = 0
+    if included > 0 and (fresh or user).get("cycle_started_at"):
+        try:
+            cycle_dt = datetime.fromisoformat((fresh or user)["cycle_started_at"])
+            cycle_used = await db.rate_events.count_documents(
+                {"user_id": user["id"], "ts": {"$gte": cycle_dt}, "billable": True}
+            )
+        except ValueError:
+            cycle_used = 0
+
     return {
         "tier": tier,
         "hour": {"used": counts["hour_used"], "limit": limits["hour"], "pct": pct_hour},
         "day": {"used": counts["day_used"], "limit": limits["day"]},
         "concurrent": {"used": concurrent, "limit": limits["concurrent"]},
-        "warn": pct_hour >= 80,
+        "cycle": {"used": cycle_used, "included": included},
+        "forge_credits": (fresh or user).get("forge_credits", 0),
+        "warn": pct_hour >= 80 or (included > 0 and cycle_used >= included),
+        "live_mode": LIVE_MODE,
     }
 
 
@@ -829,9 +900,10 @@ async def billing_checkout(payload: CheckoutIn, http_request: Request, user: dic
         "user_id": user["id"],
         "user_email": user["email"],
         "package_id": payload.package_id,
-        "tier": pkg["tier"],
+        "tier": pkg.get("tier") or pkg.get("tier_required") or "credits",
         "duration_days": str(pkg["duration_days"]),
         "mode": pkg.get("mode", "payment"),
+        "credits": str(pkg.get("credits", 0)),
     }
 
     if pkg.get("mode") == "subscription":
@@ -1376,6 +1448,231 @@ async def orchestrator_config():
         "platforms": [{"id": k, **{kk: vv for kk, vv in v.items()}} for k, v in PLATFORMS.items()],
         "universes": [{"id": k, **{kk: vv for kk, vv in v.items()}} for k, v in UNIVERSES.items()],
     }
+
+
+# ---------- Execution Engine (sandboxed runner) ----------
+EXEC_LIMITS = {
+    "aprendiz": {"per_hour": 0, "concurrent": 0},
+    "soulfire": {"per_hour": 10, "concurrent": 1},
+    "maestro": {"per_hour": 25, "concurrent": 2},
+    # Legacy aliases
+    "maestro_elite": {"per_hour": 10, "concurrent": 1},
+    "maestro_master": {"per_hour": 25, "concurrent": 2},
+}
+
+_exec_active: dict[str, int] = {}
+_exec_cancel_events: dict[str, asyncio.Event] = {}
+
+
+async def _exec_rate_check(user: dict) -> None:
+    tier = _user_tier(user)
+    caps = EXEC_LIMITS.get(tier, EXEC_LIMITS["aprendiz"])
+    user_id = user["id"]
+    if _exec_active.get(user_id, 0) >= caps["concurrent"]:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You already have {caps['concurrent']} execution(s) running.",
+        )
+    hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent = await db.executions.count_documents(
+        {"user_id": user_id, "created_at": {"$gte": hour_ago.isoformat()}}
+    )
+    if recent >= caps["per_hour"]:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Execution rate limit hit ({caps['per_hour']}/hr on {tier}).",
+            headers={"X-Tier": tier, "X-Upgrade": "/billing"},
+        )
+
+
+@api.post("/artifacts/{artifact_id}/execute")
+async def execute_artifact(artifact_id: str, user: dict = Depends(current_user)):
+    artifact = await db.artifacts.find_one(
+        {"id": artifact_id, "user_id": user["id"]}, {"_id": 0}
+    )
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    plan = _exec_detect_plan(artifact["files"])
+    if plan.runtime == "unsupported":
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported runtime. Need a Python (main.py/app.py) or Node (package.json/index.js) entry point.",
+        )
+
+    await _exec_rate_check(user)
+
+    exec_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.executions.insert_one(
+        {
+            "id": exec_id,
+            "user_id": user["id"],
+            "artifact_id": artifact_id,
+            "artifact_title": artifact["title"],
+            "runtime": plan.runtime,
+            "entry_path": plan.entry_path,
+            "status": "queued",
+            "logs": [],
+            "deps_exit": None,
+            "run_exit": None,
+            "duration_ms": None,
+            "created_at": now,
+            "started_at": None,
+            "finished_at": None,
+        }
+    )
+
+    cancel_evt = asyncio.Event()
+    _exec_cancel_events[exec_id] = cancel_evt
+    _exec_active[user["id"]] = _exec_active.get(user["id"], 0) + 1
+
+    async def _on_log(stream: str, line: str) -> None:
+        await db.executions.update_one(
+            {"id": exec_id},
+            {
+                "$push": {
+                    "logs": {
+                        "$each": [{"t": datetime.now(timezone.utc).isoformat(), "stream": stream, "line": line}],
+                        "$slice": -2000,
+                    }
+                }
+            },
+        )
+
+    async def _runner():
+        await db.executions.update_one(
+            {"id": exec_id},
+            {"$set": {"status": "running", "started_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        try:
+            outcome = await _exec_run_artifact(artifact["files"], _on_log, cancel_evt)
+            update = {
+                "status": "canceled" if cancel_evt.is_set() else outcome.final_status,
+                "deps_exit": outcome.deps_exit,
+                "run_exit": outcome.run_exit,
+                "duration_ms": outcome.duration_ms,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.executions.update_one({"id": exec_id}, {"$set": update})
+        except Exception as exc:
+            logger.exception("Execution crashed")
+            await db.executions.update_one(
+                {"id": exec_id},
+                {
+                    "$set": {
+                        "status": "crashed",
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    "$push": {
+                        "logs": {
+                            "t": datetime.now(timezone.utc).isoformat(),
+                            "stream": "system",
+                            "line": f"[crash] {exc}",
+                        }
+                    },
+                },
+            )
+        finally:
+            _exec_cancel_events.pop(exec_id, None)
+            if _exec_active.get(user["id"], 0) > 0:
+                _exec_active[user["id"]] -= 1
+
+    asyncio.create_task(_runner())
+
+    return {"id": exec_id, "status": "queued", "runtime": plan.runtime, "entry_path": plan.entry_path}
+
+
+@api.get("/executions/{exec_id}")
+async def get_execution(exec_id: str, user: dict = Depends(current_user)):
+    doc = await db.executions.find_one({"id": exec_id, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return doc
+
+
+@api.get("/artifacts/{artifact_id}/executions")
+async def list_artifact_executions(artifact_id: str, user: dict = Depends(current_user)):
+    cursor = db.executions.find(
+        {"artifact_id": artifact_id, "user_id": user["id"]},
+        {"_id": 0, "logs": 0},
+    ).sort("created_at", -1).limit(20)
+    return [d async for d in cursor]
+
+
+@api.post("/executions/{exec_id}/cancel")
+async def cancel_execution(exec_id: str, user: dict = Depends(current_user)):
+    doc = await db.executions.find_one({"id": exec_id, "user_id": user["id"]}, {"_id": 0, "id": 1, "status": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if doc["status"] not in ("queued", "running"):
+        return {"canceled": False, "reason": f"already {doc['status']}"}
+    evt = _exec_cancel_events.get(exec_id)
+    if evt:
+        evt.set()
+    return {"canceled": True}
+
+
+PINNED_RUNS_MAX = 5
+PIN_LOG_TAIL = 200  # last N log entries kept on the pinned record
+
+
+@api.post("/executions/{exec_id}/pin")
+async def pin_execution(exec_id: str, user: dict = Depends(current_user)):
+    """Master-tier only. Embed a trimmed run summary into the artifact's demo reel."""
+    if _user_tier(user) != "maestro_master":
+        raise HTTPException(
+            status_code=402,
+            detail="Pinned-run history is a Maestro Master feature. Upgrade to keep your demo reel.",
+            headers={"X-Upgrade": "/billing", "X-Required-Tier": "maestro_master"},
+        )
+
+    ex = await db.executions.find_one({"id": exec_id, "user_id": user["id"]}, {"_id": 0})
+    if not ex:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if ex["status"] in ("queued", "running"):
+        raise HTTPException(status_code=400, detail="Execution still running — wait for it to finish")
+
+    pinned = {
+        "execution_id": ex["id"],
+        "runtime": ex.get("runtime"),
+        "entry_path": ex.get("entry_path"),
+        "status": ex.get("status"),
+        "run_exit": ex.get("run_exit"),
+        "deps_exit": ex.get("deps_exit"),
+        "duration_ms": ex.get("duration_ms"),
+        "logs_tail": (ex.get("logs") or [])[-PIN_LOG_TAIL:],
+        "pinned_at": datetime.now(timezone.utc).isoformat(),
+        "ran_at": ex.get("started_at") or ex.get("created_at"),
+    }
+
+    # Atomic upsert: if this exec is already pinned, replace it; else append + cap to last MAX.
+    art = await db.artifacts.find_one(
+        {"id": ex["artifact_id"], "user_id": user["id"]}, {"_id": 0, "pinned_runs": 1}
+    )
+    if not art:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    existing = art.get("pinned_runs") or []
+    new_list = [p for p in existing if p.get("execution_id") != ex["id"]]
+    new_list.append(pinned)
+    new_list = new_list[-PINNED_RUNS_MAX:]
+
+    await db.artifacts.update_one(
+        {"id": ex["artifact_id"], "user_id": user["id"]},
+        {"$set": {"pinned_runs": new_list}},
+    )
+    return {"pinned": True, "count": len(new_list), "execution_id": ex["id"]}
+
+
+@api.delete("/artifacts/{artifact_id}/pinned/{exec_id}")
+async def unpin_run(artifact_id: str, exec_id: str, user: dict = Depends(current_user)):
+    res = await db.artifacts.update_one(
+        {"id": artifact_id, "user_id": user["id"]},
+        {"$pull": {"pinned_runs": {"execution_id": exec_id}}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return {"unpinned": True}
 
 
 # ---------- Wiring ----------
