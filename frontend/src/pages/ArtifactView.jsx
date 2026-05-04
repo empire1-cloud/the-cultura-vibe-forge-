@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { api, API, CATEGORIES } from "../lib/api";
 import { Button } from "../components/ui/button";
-import { Download, ArrowLeft, File as FileIcon, Megaphone, X as XIcon } from "lucide-react";
+import { Download, ArrowLeft, File as FileIcon, Megaphone, X as XIcon, Play, Square, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 const catLabel = (id) => CATEGORIES.find((c) => c.id === id)?.label || id;
@@ -24,6 +24,10 @@ export default function ArtifactView() {
   const [universe, setUniverse] = useState("cultura");
   const [picked, setPicked] = useState(["x", "instagram"]);
   const [amplifying, setAmplifying] = useState(false);
+  const [execution, setExecution] = useState(null);
+  const [executing, setExecuting] = useState(false);
+  const execLogRef = useRef(null);
+  const execPollRef = useRef(null);
 
   useEffect(() => {
     api
@@ -56,6 +60,50 @@ export default function ArtifactView() {
       toast.error(err?.response?.data?.detail || "Amplifier failed");
     } finally {
       setAmplifying(false);
+    }
+  };
+
+  // Auto-scroll the execution terminal
+  useEffect(() => {
+    if (execLogRef.current) execLogRef.current.scrollTop = execLogRef.current.scrollHeight;
+  }, [execution?.logs?.length]);
+
+  useEffect(() => () => clearTimeout(execPollRef.current), []);
+
+  const pollExecution = async (execId) => {
+    try {
+      const res = await api.get(`/executions/${execId}`);
+      setExecution(res.data);
+      if (["queued", "running"].includes(res.data.status)) {
+        execPollRef.current = setTimeout(() => pollExecution(execId), 1000);
+      }
+    } catch {
+      // execution disappeared, stop polling
+    }
+  };
+
+  const runExecution = async () => {
+    setExecuting(true);
+    setExecution(null);
+    try {
+      const res = await api.post(`/artifacts/${id}/execute`);
+      toast.success("Execution started");
+      setExecution({ ...res.data, logs: [] });
+      pollExecution(res.data.id);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Execute failed");
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  const cancelExecution = async () => {
+    if (!execution) return;
+    try {
+      await api.post(`/executions/${execution.id}/cancel`);
+      toast("Cancellation requested");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Cancel failed");
     }
   };
 
@@ -115,7 +163,15 @@ export default function ArtifactView() {
         </Button>
       </div>
 
-      <div className="-mt-6 mb-8 flex items-center gap-2">
+      <div className="-mt-6 mb-8 flex items-center gap-2 flex-wrap">
+        <Button
+          onClick={runExecution}
+          disabled={executing || execution?.status === "running" || execution?.status === "queued"}
+          className="px-4 h-9 text-[10px] uppercase tracking-[0.25em] font-bold border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 rounded-sm inline-flex items-center gap-1.5 transition-all disabled:opacity-50"
+          data-testid="execute-button"
+        >
+          <Play className="h-3 w-3" /> Run
+        </Button>
         <button
           onClick={() => setShowAmplify(true)}
           className="px-4 py-2 text-[10px] uppercase tracking-[0.25em] font-bold border border-[#c8102e]/40 bg-[#c8102e]/10 text-[#ff5b6f] hover:bg-[#c8102e]/20 rounded-sm inline-flex items-center gap-1.5 transition-all"
@@ -124,7 +180,7 @@ export default function ArtifactView() {
           <Megaphone className="h-3 w-3" /> Amplify
         </button>
         <span className="text-[10px] uppercase tracking-[0.25em] text-slate-600">
-          Send to the Amplifier · drafts only
+          Sandbox · best-effort isolation
         </span>
       </div>
 
@@ -190,6 +246,83 @@ export default function ArtifactView() {
               {artifact.refined_prompt}
             </pre>
           </details>
+
+          {execution && (
+            <div className="mt-6" data-testid="execution-panel">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[10px] uppercase tracking-[0.3em] text-slate-500 inline-flex items-center gap-2">
+                  <Play className="h-3 w-3" />
+                  Execution · {execution.runtime} · {execution.entry_path || "—"}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-[10px] uppercase tracking-[0.25em] px-2 py-0.5 border rounded-sm ${
+                      execution.status === "ok"
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200"
+                        : execution.status === "running" || execution.status === "queued"
+                        ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                        : execution.status === "canceled"
+                        ? "border-slate-500/50 bg-slate-500/10 text-slate-300"
+                        : "border-red-500/50 bg-red-500/10 text-red-300"
+                    }`}
+                    data-testid="execution-status"
+                  >
+                    {execution.status}
+                    {execution.run_exit !== null && execution.run_exit !== undefined && (
+                      <span className="ml-1 text-slate-500">· exit {execution.run_exit}</span>
+                    )}
+                    {execution.duration_ms != null && (
+                      <span className="ml-1 text-slate-500">· {execution.duration_ms}ms</span>
+                    )}
+                  </span>
+                  {(execution.status === "running" || execution.status === "queued") && (
+                    <button
+                      onClick={cancelExecution}
+                      className="text-[10px] uppercase tracking-[0.25em] px-2 py-0.5 border border-white/15 hover:border-red-500/50 text-slate-400 hover:text-red-300 rounded-sm inline-flex items-center gap-1"
+                      data-testid="execution-cancel"
+                    >
+                      <Square className="h-2.5 w-2.5" /> Stop
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-[#050505] border border-white/10 rounded-md overflow-hidden">
+                <div
+                  ref={execLogRef}
+                  className="scanlines p-4 h-72 overflow-y-auto font-mono-term text-[12px] leading-relaxed"
+                  data-testid="execution-logs"
+                >
+                  {(execution.logs || []).length === 0 ? (
+                    <div className="text-slate-600">Waiting for output…</div>
+                  ) : (
+                    execution.logs.map((l, i) => (
+                      <div
+                        key={i}
+                        className={`whitespace-pre ${
+                          l.stream === "stderr"
+                            ? "text-red-300"
+                            : l.stream === "system"
+                            ? "text-[#c8102e]"
+                            : "text-slate-200"
+                        }`}
+                      >
+                        {l.line || "\u00A0"}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-2 flex items-start gap-2 text-[11px] text-amber-300/80">
+                <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span>
+                  Best-effort sandbox · 30s CPU · 512MB RAM · 50MB write cap. Not container
+                  isolation. Only run code you trust.
+                </span>
+              </div>
+            </div>
+          )}
         </section>
       </div>
 
