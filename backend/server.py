@@ -20,7 +20,7 @@ import bcrypt
 import jwt
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRouter
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -34,21 +34,54 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 # ---------- Config ----------
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
-JWT_SECRET = os.environ["JWT_SECRET"]
+MONGO_URL = os.environ.get("MONGO_URL", "").strip()
+DB_NAME = os.environ.get("DB_NAME", "").strip()
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXP_DAYS = 7
+STATUS_ACTIVE = "active"
+STATUS_DEGRADED = "degraded"
+DIAGNOSTIC_API_PATHS = {"/api/", "/api/categories"}
 
-client = AsyncIOMotorClient(MONGO_URL)
-db = client[DB_NAME]
+_missing_runtime_env_keys = [
+    key for key, value in (
+        ("MONGO_URL", MONGO_URL),
+        ("DB_NAME", DB_NAME),
+        ("EMERGENT_LLM_KEY", EMERGENT_LLM_KEY),
+        ("JWT_SECRET", JWT_SECRET),
+    ) if not value
+]
+_mongo_url_valid = MONGO_URL.startswith("mongodb://") or MONGO_URL.startswith("mongodb+srv://")
+if MONGO_URL and not _mongo_url_valid and "MONGO_URL" not in _missing_runtime_env_keys:
+    _missing_runtime_env_keys.append("MONGO_URL")
+client = AsyncIOMotorClient(MONGO_URL) if _mongo_url_valid else None
+db = client[DB_NAME] if client and DB_NAME else None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("arquitecto")
+if _missing_runtime_env_keys:
+    logger.error("Backend runtime is missing required environment variables.")
 
 app = FastAPI(title="Cultura Vibe OS")
 api = APIRouter(prefix="/api")
+
+
+@app.middleware("http")
+async def runtime_config_guard(request: Request, call_next):
+    if (
+        _missing_runtime_env_keys
+        and request.url.path.startswith("/api")
+        and request.url.path not in DIAGNOSTIC_API_PATHS
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Backend runtime is not fully configured.",
+                "missing_env": _missing_runtime_env_keys,
+            },
+        )
+    return await call_next(request)
 
 
 # ---------- Soulfire Guardrails ----------
@@ -186,7 +219,14 @@ async def current_user(request: Request) -> dict:
 # ---------- Routes: Auth ----------
 @api.get("/")
 async def root():
-    return {"service": "Cultura Vibe", "status": "active", "mode": "con_ganas"}
+    payload = {
+        "service": "Cultura Vibe",
+        "status": STATUS_DEGRADED if _missing_runtime_env_keys else STATUS_ACTIVE,
+        "mode": "con_ganas",
+    }
+    if _missing_runtime_env_keys:
+        payload["missing_env"] = _missing_runtime_env_keys
+    return payload
 
 
 @api.post("/auth/signup", response_model=AuthOut)
@@ -1666,4 +1706,5 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    if client is not None:
+        client.close()
