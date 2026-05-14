@@ -52,7 +52,10 @@ _missing_runtime_env_keys = [
         ("JWT_SECRET", JWT_SECRET),
     ) if not value
 ]
-client = AsyncIOMotorClient(MONGO_URL) if MONGO_URL else None
+_mongo_url_valid = MONGO_URL.startswith("mongodb://") or MONGO_URL.startswith("mongodb+srv://")
+if MONGO_URL and not _mongo_url_valid and "MONGO_URL" not in _missing_runtime_env_keys:
+    _missing_runtime_env_keys.append("MONGO_URL")
+client = AsyncIOMotorClient(MONGO_URL) if _mongo_url_valid else None
 db = client[DB_NAME] if client and DB_NAME else None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
