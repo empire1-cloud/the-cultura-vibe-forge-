@@ -34,12 +34,15 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 # ---------- Config ----------
-MONGO_URL = os.environ.get("MONGO_URL", "")
-DB_NAME = os.environ.get("DB_NAME", "")
+MONGO_URL = os.environ.get("MONGO_URL", "").strip()
+DB_NAME = os.environ.get("DB_NAME", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXP_DAYS = 7
+STATUS_ACTIVE = "active"
+STATUS_DEGRADED = "degraded"
+DIAGNOSTIC_API_PATHS = {"/api/", "/api/categories"}
 
 _missing_runtime_env_keys = [
     key for key, value in (
@@ -66,7 +69,7 @@ async def runtime_config_guard(request: Request, call_next):
     if (
         _missing_runtime_env_keys
         and request.url.path.startswith("/api")
-        and request.url.path not in {"/api/", "/api/categories"}
+        and request.url.path not in DIAGNOSTIC_API_PATHS
     ):
         return JSONResponse(
             status_code=503,
@@ -215,7 +218,7 @@ async def current_user(request: Request) -> dict:
 async def root():
     payload = {
         "service": "Cultura Vibe",
-        "status": "degraded" if _missing_runtime_env_keys else "active",
+        "status": STATUS_DEGRADED if _missing_runtime_env_keys else STATUS_ACTIVE,
         "mode": "con_ganas",
     }
     if _missing_runtime_env_keys:
