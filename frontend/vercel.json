@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "buildCommand": "cd frontend && yarn install && yarn build",
-  "outputDirectory": "frontend/build",
-  "installCommand": "echo 'Skipping root install'",
+  "buildCommand": "yarn install && yarn build",
+  "outputDirectory": "build",
+  "installCommand": "yarn install",
   "rewrites": [
     {
       "source": "/(.*)",
