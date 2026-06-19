@@ -37,12 +37,43 @@ load_dotenv(ROOT_DIR / ".env")
 MONGO_URL = os.environ.get("MONGO_URL", "").strip()
 DB_NAME = os.environ.get("DB_NAME", "").strip()
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.anthropic.com").rstrip("/")
+LLM_API_FORMAT = os.environ.get("LLM_API_FORMAT", "anthropic")  # "anthropic" or "openai"
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXP_DAYS = 7
 STATUS_ACTIVE = "active"
 STATUS_DEGRADED = "degraded"
 DIAGNOSTIC_API_PATHS = {"/api/", "/api/categories"}
+
+async def _llm_call(prompt_text: str, sys_prompt: str, max_tokens: int = 4096) -> str:
+    """Unified LLM call supporting both Anthropic and OpenAI-compatible APIs."""
+    async with httpx.AsyncClient(timeout=120) as client:
+        if LLM_API_FORMAT == "openai":
+            resp = await client.post(
+                f"{LLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {EMERGENT_LLM_KEY}", "content-type": "application/json"},
+                json={
+                    "model": LLM_MODEL,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": prompt_text},
+                    ],
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        else:
+            resp = await client.post(
+                f"{LLM_BASE_URL}/v1/messages",
+                headers={"x-api-key": EMERGENT_LLM_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": LLM_MODEL, "max_tokens": max_tokens, "system": sys_prompt, "messages": [{"role": "user", "content": prompt_text}]},
+            )
+            resp.raise_for_status()
+            return resp.json()["content"][0]["text"]
+
 
 _missing_runtime_env_keys = [
     key for key, value in (
@@ -330,17 +361,7 @@ async def forge_logic_task(payload: GenerateIn) -> Tuple[dict, str]:
     refined = cultural_refinement(payload.prompt, payload.category)
     session_id = f"forge-{uuid.uuid4()}"
 
-    async def _call_claude(prompt_text: str, sys_prompt: str) -> str:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": EMERGENT_LLM_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-5-20250929", "max_tokens": 4096, "system": sys_prompt, "messages": [{"role": "user", "content": prompt_text}]},
-            )
-            resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
-
-    raw = await _call_claude(refined, SYSTEM_PROMPT)
+    raw = await _llm_call(refined, SYSTEM_PROMPT, max_tokens=4096)
     data = _extract_json(raw)
     return data, refined
 
@@ -1206,17 +1227,7 @@ async def _generate_drafts(
 
     session_id = f"amp-{uuid.uuid4()}"
 
-    async def _call_claude_draft(prompt_text: str, sys_prompt: str) -> str:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": EMERGENT_LLM_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-5-20250929", "max_tokens": 2048, "system": sys_prompt, "messages": [{"role": "user", "content": prompt_text}]},
-            )
-            resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
-
-    raw = await _call_claude_draft(user_msg, DRAFT_SYSTEM_PROMPT)
+    raw = await _llm_call(user_msg, DRAFT_SYSTEM_PROMPT, max_tokens=2048)
     data = _extract_json(raw)
     return data.get("drafts") or []
 
